@@ -1,0 +1,198 @@
+---
+title: "ncanda_roi_roi_cleaning"
+author: "Daniel Petrie"
+date: "2024-08-30"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library("ggplot2") #For plotting
+library("GGally") #ggpairs()
+library("tidyverse") #Wranglin
+library("dplyr") #Wranglin
+
+setwd("H:/Dan/ncanda/R")
+```
+
+Reading in data and cleaning
+
+```{r}
+##Get vector of all txt files
+temp_rest_ge <- list.files(path = "H:/Dan/ncanda/rest/ncanda_ge/corr_data", 
+                        pattern = ".txt",
+                        full.names = TRUE)
+
+temp_rest_siemens <- list.files(path = "H:/Dan/ncanda/rest/ncanda_siemens/corr_data", 
+                        pattern = ".txt",
+                        full.names = TRUE)
+
+#Get a vector of just file names
+temp_names_ge <- list.files(path = "H:/Dan/ncanda/rest/ncanda_ge/corr_data",
+                         pattern = ".txt")
+
+temp_names_siemens <- list.files(path = "H:/Dan/ncanda/rest/ncanda_siemens/corr_data", 
+                        pattern = ".txt")
+
+##Read all txt files into list
+datalist_ge <- lapply(temp_rest_ge,
+                  FUN = read.table,
+                  header = T)
+
+datalist_siemens <- lapply(temp_rest_siemens,
+                  FUN = read.table,
+                  header = T)
+
+#Creating row names
+dput(colnames(datalist_ge[[1]]))
+row_names_ge <- dput(colnames(datalist_ge[[1]]))
+
+dput(colnames(datalist_siemens[[1]]))
+row_names_siemens <- dput(colnames(datalist_siemens[[1]]))
+
+#Append row names to list elements
+datalist_ge <- lapply(datalist_ge,
+                   function(x) cbind(x, row_names_ge))
+datalist_siemens <- lapply(datalist_siemens,
+                   function(x) cbind(x, row_names_siemens))
+
+##Creat wide dataframe for each element in list.
+datalist_ge_wide <- lapply(1:length(datalist_ge), 
+                   function(x) (
+                     pivot_wider(datalist_ge[[x]], 
+                                 names_from = row_names_ge, 
+                                 values_from = c("roi1","roi2", 
+                                                 "roi3", "roi4", 
+                                                 "roi5", "roi6", 
+                                                 "roi7", "roi8"))))
+
+datalist_siemens_wide <- lapply(1:length(datalist_siemens), 
+                   function(x) (
+                     pivot_wider(datalist_siemens[[x]], 
+                                 names_from = row_names_siemens, 
+                                 values_from = c("roi1","roi2", 
+                                                 "roi3", "roi4", 
+                                                 "roi5", "roi6", 
+                                                 "roi7", "roi8"))))
+
+#Creat data frame that by combining list and appending ids 
+rest_data_ge <- bind_rows(datalist_ge_wide)
+rest_data_ge$tempid <- cbind(temp_names_ge)
+
+rest_data_siemens <- bind_rows(datalist_siemens_wide)
+rest_data_siemens$tempid <- cbind(temp_names_siemens)
+
+#Binding rows from each scanner to giant data set
+rest_data_temp <- bind_rows(rest_data_ge, rest_data_siemens)
+
+##Create id and vdate columns
+rest_data <- rest_data_temp %>%
+  separate(tempid, c("subject", "visit", "temp"), sep = "_", extra = "merge") %>%
+  dplyr::select(c("subject", "visit", 
+           "roi1_roi2", "roi1_roi3", "roi1_roi4", "roi1_roi5", 
+           "roi1_roi6", "roi1_roi7", "roi1_roi8", 
+           
+           "roi2_roi3", "roi2_roi4", "roi2_roi5", "roi2_roi6", 
+           "roi2_roi7", "roi2_roi8",  
+           
+           "roi3_roi4", "roi3_roi5", "roi3_roi6", 
+           "roi3_roi7", "roi3_roi8",  
+           
+           "roi4_roi5", "roi4_roi6", "roi4_roi7", 
+           "roi4_roi8", 
+           
+           "roi5_roi6", "roi5_roi7", "roi5_roi8", 
+           
+           "roi6_roi7", "roi6_roi8",  
+           
+           "roi7_roi8"))
+##Looks correct
+table(matrix(1:8,8,8) %>% upper.tri())
+
+#Rename colums to ROI names.
+#This will change if more specific ROIs are chosen.
+#From Hera/Dan/ncanda/scripts/create_mask_aal3_082124.sh (hint CTRL + SHIFT + C) huh?
+#ROI_1. Putamen
+#ROI_2. Pre_cg
+#ROI_3. Post_cg
+#ROI_4. SMA
+#ROI_5. Caudate 
+#ROI_6. OFC
+#ROI_7. vmPFC
+#ROI_8. dlPFC
+
+rest_data <- rest_data %>% 
+  rename(put_precg = "roi1_roi2",
+         put_poscg = "roi1_roi3", 
+         put_sma = "roi1_roi4",
+         put_caud = "roi1_roi5",
+         put_ofc = "roi1_roi6",
+         put_vmpfc = "roi1_roi7",
+         put_dlpfc = "roi1_roi8",
+         
+         precg_poscg = "roi2_roi3",    
+         precg_sma = "roi2_roi4",
+         precg_caud = "roi2_roi5",  
+         precg_ofc = "roi2_roi6",
+         precg_vmpfc = "roi2_roi7",
+         precg_dlpfc = "roi2_roi8",
+
+         poscg_sma = "roi3_roi4",   
+         poscg_caud = "roi3_roi5",
+         poscg_ofc = "roi3_roi6",
+         poscg_vmpfc = "roi3_roi7", 
+         poscg_dlpfc = "roi3_roi8",,
+         
+         sma_caud = "roi4_roi5",   
+         sma_ofc = "roi4_roi6",
+         sma_vmpfc = "roi4_roi7",
+         sma_dlpfc = "roi4_roi8",
+         
+         caud_ofc = "roi5_roi6",
+         caud_vmpfc = "roi5_roi7",
+         caud_dlpfc = "roi5_roi8",
+         
+         ofc_vmpfc = "roi6_roi7",  
+         ofc_dlpfc = "roi6_roi8",
+           
+         vmpfc_dlpfc = "roi7_roi8")
+```
+
+#ROI_1. Putamen
+#ROI_2. Pre_cg
+#ROI_3. Post_cg
+#ROI_4. SMA
+
+#ROI_5. Caudate 
+#ROI_6. OFC
+#ROI_7. vmPFC
+#ROI_8. dlPFC
+
+
+
+```{r}
+ggpairs(rest_data[,c("put_precg", "put_poscg", "put_sma",
+                     "caud_ofc", "caud_vmpfc", "caud_dlpfc")])
+
+ggplot(rest_data, aes(x = visit, y = put_precg, group = subject)) +
+  geom_point() + geom_line() +
+  geom_smooth(method = "lm", aes(group = 1), color = "red")
+
+ggplot(rest_data, aes(x = visit, y = put_poscg, group = subject)) +
+  geom_point() + geom_line() +
+  geom_smooth(method = "lm", aes(group = 1), color = "red")
+
+ggplot(rest_data, aes(x = visit, y = put_sma, group = subject)) +
+  geom_point() + geom_line() +
+  geom_smooth(method = "lm", aes(group = 1), color = "red")
+
+ggplot(rest_data, aes(x = visit, y = put_caud, group = subject)) +
+  geom_point() + geom_line() +
+  geom_smooth(method = "lm", aes(group = 1), color = "red")
+```
+
+```{r}
+#write.csv(rest_data, file = "roi_roi_aal3.csv", row.names = FALSE)
+```
+

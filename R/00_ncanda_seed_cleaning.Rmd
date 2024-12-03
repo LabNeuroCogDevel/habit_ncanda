@@ -1,0 +1,312 @@
+---
+title: "ncanda_seed_cleaning"
+author: "Daniel Petrie"
+date: "2024-11-11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library("ggplot2") #For plotting
+library("GGally") #ggpairs()
+library("tidyverse") #Wranglin
+library("dplyr") #Wranglin
+library("ggseg")
+library("ggsegGordon")
+library("lme4")
+library(lmerTest)
+setwd("H:/Dan/ncanda/R")
+
+
+#Putamen
+put_seed <- read.delim("H:/Dan/ncanda/rest/putamen_seed_gordon_harox.tsv", header = TRUE)
+
+#Caudate
+caud_seed <- read.delim("H:/Dan/ncanda/rest/caudate_seed_gordon_harox.tsv", header = TRUE)
+
+#Accumbens
+nacc_seed <- read.delim("H:/Dan/ncanda/rest/accumbens_seed_gordon_harox.tsv", header = TRUE)
+
+#Gordon parcels
+parcels <- read.csv("Parcels.csv", header = TRUE)
+```
+
+Four data frames based on seeded connectivity analyses:
+1.) Putamen seed
+2.) Caudate seed
+3.) Nacc seed
+4.) Network-level from all seeds
+
+It might make the most sense to keep separate for now and treat like three different data sets. I will start with just the putamen one for analyses for NCANDA abstract. For the manuscript, I'll either combine or use as specificity type of thing.
+
+
+```{r Cleaning}
+#Putamen
+put_seed_clean <- put_seed %>%
+  mutate(
+    subject = str_extract(name, "S\\d+"),
+    visit_numeric = str_extract(name, "(?<=_)(\\d+)(?=_seed)") %>% 
+      as.numeric()
+  ) %>%
+  select(-contains("count"), -X, -X.1, -name) %>%
+  select(subject, visit_numeric, everything())
+
+#Caudate
+caud_seed_clean <- caud_seed %>%
+  mutate(
+    subject = str_extract(name, "S\\d+"),
+    visit_numeric = str_extract(name, "(?<=_)(\\d+)(?=_seed)") %>% 
+      as.numeric()
+  ) %>%
+  select(-contains("count"), -X, -X.1, -name) %>%
+  select(subject, visit_numeric, everything())
+
+#Accumbens
+nacc_seed_clean <- nacc_seed %>%
+  mutate(
+    subject = str_extract(name, "S\\d+"),
+    visit_numeric = str_extract(name, "(?<=_)(\\d+)(?=_seed)") %>% 
+      as.numeric()
+  ) %>%
+  select(-contains("count"), -X, -X.1, -name) %>%
+  select(subject, visit_numeric, everything())
+
+#Parcel labels
+#parcels_clean <- parcels %>%
+#  mutate(label = paste(Hem, Community, ParcelID, sep = "_"))
+
+parcels_clean <- parcels %>%
+   mutate(
+    Community = case_when(
+      Community == "CinguloParietal" ~ "MedialParietal",
+      Community == "RetrosplenialTemporal" ~ "ParietoOccip",
+      TRUE ~ Community  # Keep other values unchanged
+    )) %>%
+  group_by(Community) %>%
+  mutate(region = paste0(Community, "_", row_number())) %>%
+  ungroup()
+
+#CinguloParietal changed to MedialParietal
+#RetrosplenialTemporal changed to ParietoOccip
+```
+
+Note. For plotting with ggseg() I need to figure out some additional labeling. I have them numbered sequentially, but I really probably need them numbered according to what function network they belong to.
+
+
+This was afni command that created HarOx subcort.
+
+3dcalc -a HarOx-sub-1mm+tlrc. -expr '1*equals(a,4) + 2*equals(a,5) + 3*equals(a,6) + 4*equals(a,7) + 5*equals(a,10) + 6*equals(a,11) + 7*equals(a,15) + 8*equals(a,16) + 9*equals(a,17) + 10*equals(a,18) + 11*equals(a,20) + 12*equals(a,21)' -prefix HarOx-sub-1mm-mod+tlrc
+
+This was afni command to make Gordon_HarOx
+
+3dcalc -a Parcels_MNI_111_warped.nii.gz -b HarOx-sub-1mm-mod+tlrc. -expr 'a + (333*ispositive(b-0.5) + b)*equals(a,0)' -prefix Gordon_HarOx_1mm+tlrc
+
+These are labels from HarvardOxford-Subcortical.xml in FSL directory.
+
+ROI           HarOx Label # (AFNI new atlas #)
+thalamus = 4 (1),15 (7)
+amygdala = 10 (5),20 (11)
+nacc = 11 (6),21 (12)
+putamen = 6 (3),17 (9)
+caudate = 5 (2),16 (8)
+pallidum = 7 (4),18 (10)
+
+```{r Replacing column names Putamen}
+# Create mapping of ParcelID to label
+label_map <- parcels_clean %>% 
+  select(ParcelID, region) %>% 
+  deframe()
+
+# Extract the numeric part from each target_df column and replace if it exists in the label_map
+new_colnames <- colnames(put_seed_clean) %>% 
+  # Apply the replacement based on ParcelID
+  purrr::map_chr(~ ifelse(str_detect(.x, "NZMean_\\d+"),
+                          label_map[str_extract(.x, "\\d+")], # Replace with matching label if available
+                          .x))  # Otherwise, keep the original name
+
+# Set the new column names
+colnames(put_seed_clean) <- new_colnames
+
+# View the updated target_df
+head(put_seed_clean)
+
+# Creating vector of names for subcortical based on indexing above.
+subcort <- c("L_Thalamus", "L_Caudate", "L_Putamen",
+             "L_Pallidum", "L_Amygdala", "L_Nacc",
+             "R_Thalamus", "R_Caudate", "R_Putamen",
+             "R_Pallidum", "R_Amygdala", "R_Nacc")
+
+# Verify that the subcort vector has the same length as the number of NA columns
+if(length(subcort) == length(336:347)) {
+  # Assign subcort vector names to the NA columns in positions 336 to 347
+  names(put_seed_clean)[336:347] <- subcort
+} else {
+  stop("The length of 'subcort' does not match the number of columns to rename.")
+}
+
+colnames(put_seed_clean[336:347])
+```
+
+```{r Replacing column names Caudate}
+# Create mapping of ParcelID to label
+label_map <- parcels_clean %>% 
+  select(ParcelID, region) %>% 
+  deframe()
+
+# Extract the numeric part from each target_df column and replace if it exists in the label_map
+new_colnames <- colnames(caud_seed_clean) %>% 
+  # Apply the replacement based on ParcelID
+  purrr::map_chr(~ ifelse(str_detect(.x, "NZMean_\\d+"),
+                          label_map[str_extract(.x, "\\d+")], # Replace with matching label if available
+                          .x))  # Otherwise, keep the original name
+
+# Set the new column names
+colnames(caud_seed_clean) <- new_colnames
+
+# View the updated target_df
+head(caud_seed_clean)
+
+# Creating vector of names for subcortical based on indexing above.
+subcort <- c("L_Thalamus", "L_Caudate", "L_Putamen",
+             "L_Pallidum", "L_Amygdala", "L_Nacc",
+             "R_Thalamus", "R_Caudate", "R_Putamen",
+             "R_Pallidum", "R_Amygdala", "R_Nacc")
+
+# Verify that the subcort vector has the same length as the number of NA columns
+if(length(subcort) == length(336:347)) {
+  # Assign subcort vector names to the NA columns in positions 336 to 347
+  names(caud_seed_clean)[336:347] <- subcort
+} else {
+  stop("The length of 'subcort' does not match the number of columns to rename.")
+}
+
+colnames(caud_seed_clean[336:347])
+```
+
+```{r Replacing column names accumbens}
+# Create mapping of ParcelID to label
+label_map <- parcels_clean %>% 
+  select(ParcelID, region) %>% 
+  deframe()
+
+# Extract the numeric part from each target_df column and replace if it exists in the label_map
+new_colnames <- colnames(nacc_seed_clean) %>% 
+  # Apply the replacement based on ParcelID
+  purrr::map_chr(~ ifelse(str_detect(.x, "NZMean_\\d+"),
+                          label_map[str_extract(.x, "\\d+")], # Replace with matching label if available
+                          .x))  # Otherwise, keep the original name
+
+# Set the new column names
+colnames(nacc_seed_clean) <- new_colnames
+
+# View the updated target_df
+head(nacc_seed_clean)
+
+# Creating vector of names for subcortical based on indexing above.
+subcort <- c("L_Thalamus", "L_Caudate", "L_Putamen",
+             "L_Pallidum", "L_Amygdala", "L_Nacc",
+             "R_Thalamus", "R_Caudate", "R_Putamen",
+             "R_Pallidum", "R_Amygdala", "R_Nacc")
+
+# Verify that the subcort vector has the same length as the number of NA columns
+if(length(subcort) == length(336:347)) {
+  # Assign subcort vector names to the NA columns in positions 336 to 347
+  names(nacc_seed_clean)[336:347] <- subcort
+} else {
+  stop("The length of 'subcort' does not match the number of columns to rename.")
+}
+
+colnames(nacc_seed_clean[336:347])
+```
+
+Creating network level data. This should be expanded to include the other seed ROIs.
+
+```{r}
+#putamen
+put_seed_clean_net <- put_seed_clean %>%
+  rowwise() %>%
+  mutate(
+    Auditory_putamen = mean(c_across(contains("Auditory")), na.rm = TRUE),
+    CinguloOperc_putamen = mean(c_across(contains("CinguloOperc")), na.rm = TRUE),
+    MedialParietal_putamen = mean(c_across(contains("MedialParietal")), na.rm = TRUE),
+    Default_putamen = mean(c_across(contains("Default")), na.rm = TRUE),
+    DorsalAttn_putamen = mean(c_across(contains("DorsalAttn")), na.rm = TRUE),
+    FrontoParietal_putamen = mean(c_across(contains("FrontoParietal")), na.rm = TRUE),
+    None_putamen = mean(c_across(contains("None")), na.rm = TRUE),
+    ParietoOccip_putamen = mean(c_across(contains("ParietoOccip")), na.rm = TRUE),
+    Salience_putamen = mean(c_across(contains("Salience")), na.rm = TRUE),
+    SMhand_putamen = mean(c_across(contains("SMhand")), na.rm = TRUE),
+    SMmouth_putamen = mean(c_across(contains("SMmouth")), na.rm = TRUE),
+    VentralAttn_putamen = mean(c_across(contains("VentralAttn")), na.rm = TRUE),
+    Visual_putamen = mean(c_across(contains("Visual")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+#caudate
+caud_seed_clean_net <- caud_seed_clean %>%
+  rowwise() %>%
+  mutate(
+    Auditory_caudate = mean(c_across(contains("Auditory")), na.rm = TRUE),
+    CinguloOperc_caudate = mean(c_across(contains("CinguloOperc")), na.rm = TRUE),
+    MedialParietal_caudate = mean(c_across(contains("MedialParietal")), na.rm = TRUE),
+    Default_caudate = mean(c_across(contains("Default")), na.rm = TRUE),
+    DorsalAttn_caudate = mean(c_across(contains("DorsalAttn")), na.rm = TRUE),
+    FrontoParietal_caudate = mean(c_across(contains("FrontoParietal")), na.rm = TRUE),
+    None_caudate = mean(c_across(contains("None")), na.rm = TRUE),
+    ParietoOccip_caudate = mean(c_across(contains("ParietoOccip")), na.rm = TRUE),
+    Salience_caudate = mean(c_across(contains("Salience")), na.rm = TRUE),
+    SMhand_caudate = mean(c_across(contains("SMhand")), na.rm = TRUE),
+    SMmouth_caudate = mean(c_across(contains("SMmouth")), na.rm = TRUE),
+    VentralAttn_caudate = mean(c_across(contains("VentralAttn")), na.rm = TRUE),
+    Visual_caudate = mean(c_across(contains("Visual")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+#accumbens
+nacc_seed_clean_net <- nacc_seed_clean %>%
+  rowwise() %>%
+  mutate(
+    Auditory_accumbens = mean(c_across(contains("Auditory")), na.rm = TRUE),
+    CinguloOperc_accumbens = mean(c_across(contains("CinguloOperc")), na.rm = TRUE),
+    MedialParietal_accumbens = mean(c_across(contains("MedialParietal")), na.rm = TRUE),
+    Default_accumbens = mean(c_across(contains("Default")), na.rm = TRUE),
+    DorsalAttn_accumbens = mean(c_across(contains("DorsalAttn")), na.rm = TRUE),
+    FrontoParietal_accumbens = mean(c_across(contains("FrontoParietal")), na.rm = TRUE),
+    None_accumbens = mean(c_across(contains("None")), na.rm = TRUE),
+    ParietoOccip_accumbens = mean(c_across(contains("ParietoOccip")), na.rm = TRUE),
+    Salience_accumbens = mean(c_across(contains("Salience")), na.rm = TRUE),
+    SMhand_accumbens = mean(c_across(contains("SMhand")), na.rm = TRUE),
+    SMmouth_accumbens = mean(c_across(contains("SMmouth")), na.rm = TRUE),
+    VentralAttn_accumbens = mean(c_across(contains("VentralAttn")), na.rm = TRUE),
+    Visual_accumbens = mean(c_across(contains("Visual")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+Combining the network-level data into a separate data frame.
+
+```{r}
+put_seed_clean_sub <- put_seed_clean_net %>%
+  select(subject, visit_numeric, Auditory_putamen, CinguloOperc_putamen, MedialParietal_putamen, Default_putamen, DorsalAttn_putamen, FrontoParietal_putamen, None_putamen, ParietoOccip_putamen, Salience_putamen, SMhand_putamen, SMmouth_putamen, VentralAttn_putamen, Visual_putamen)
+
+caud_seed_clean_sub <- caud_seed_clean_net %>%
+  select(subject, visit_numeric, Auditory_caudate, CinguloOperc_caudate, MedialParietal_caudate, Default_caudate, DorsalAttn_caudate, FrontoParietal_caudate, None_caudate, ParietoOccip_caudate, Salience_caudate, SMhand_caudate, SMmouth_caudate, VentralAttn_caudate, Visual_caudate)
+
+nacc_seed_clean_sub <- nacc_seed_clean_net %>%
+  select(subject, visit_numeric, Auditory_accumbens, CinguloOperc_accumbens, MedialParietal_accumbens, Default_accumbens, DorsalAttn_accumbens, FrontoParietal_accumbens, None_accumbens, ParietoOccip_accumbens, Salience_accumbens, SMhand_accumbens, SMmouth_accumbens, VentralAttn_accumbens, Visual_accumbens)
+
+#Combining
+combined_seed_networks <- merge(put_seed_clean_sub, caud_seed_clean_sub, by = c("subject", "visit_numeric"))
+combined_seed_networks <- merge(combined_seed_networks, nacc_seed_clean_sub, by = c("subject", "visit_numeric"))
+```
+
+
+Saving. This should be done across caudate and accumbens at ROI level. Could also be worth it to create a data frame where it is just the gordon networks for each seed region. For example, there are 13 gordon networks, across three ROIs. So auditory_putamen, auditory_caudate, auditory_accumbens for the main data set. For now I will continue to just focus on the putamen seeded network.
+
+```{r Saving}
+write.csv(put_seed_clean, file = "clean_data/putamen_seed_clean.csv", row.names = FALSE)
+write.csv(caud_seed_clean, file = "clean_data/caudate_seed_clean.csv", row.names = FALSE)
+write.csv(nacc_seed_clean, file = "clean_data/nacc_seed_clean.csv", row.names = FALSE)
+write.csv(combined_seed_networks, file = "clean_data/combined_seed_networks_clean.csv", row.names = FALSE)
+```

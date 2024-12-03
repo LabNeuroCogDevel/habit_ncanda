@@ -1,0 +1,146 @@
+---
+title: "ncanda_cleaning"
+author: "Daniel Petrie"
+date: "2024-08-20"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Global}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(see) #theme_modern()
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R")
+
+#CDDR data. I think I want to use the "youth report" version for now because it has ages.
+#Baseline through year 8
+cddr0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/youthreport1_cddr.csv", header = TRUE)
+#Year 9
+cddr8 <- read.csv("H:/Raw/Datasets/NCANDA/followup_8y/NCANDA_RELEASE_8Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/youthreport1_cddr.csv", header = TRUE)
+```
+
+Cleaning 
+add youthreport1_cddr15
+
+```{r CDDR Cleaining}
+#Vector of alcohol variable names
+subset_var <- c("subject", "visit", "youthreport1_age", "youthreport1_cddr16",
+                "youthreport1_cddr17", "youthreport1_cddr18", "youthreport1_cddr19", "youthreport1_cddr21",
+                "youthreport1_cddr22", "youthreport1_cddr23", "youthreport1_cddr26", "youthreport1_cddr27",
+                "youthreport1_cddr30", "youthreport1_cddr31")
+
+#Binding data, arrange by visit, select alcohol variables, rename.
+cddr0_8 <- bind_rows(cddr0_7, cddr8) %>% 
+  arrange(subject, visit) %>%
+  select(all_of(subset_var)) %>%
+  rename_with(~ str_replace(., "^youthreport1_", ""), starts_with("youthreport1_"))
+
+#Descriptives
+psych::describe(cddr0_8)
+```
+
+
+**CDDR variable descriptions**
+11 variables total.
+
+cddr16: How old were you when you first drank ALCOHOL regularly? (at least once a week; beer, wine, or hard liquor)  
+
+cddr17: When was the last time you drank ALCOHOL? (0=today, 1=yesterday, etc.)
+
+cddr18: How many ALCOHOLIC DRINKS did you drink on that occasion?
+
+cddr19: In your lifetime, how many days did you drink ALCOHOL (beer, wine, hard liquor)?
+
+cddr21: During the past year, (so out of 365 days), how many days did you drink ALCOHOL (beer, wine, hard liquor)? (0-365)
+
+cddr22: During the last 30 days, how many days did you drink ALCOHOL? (0-30)
+
+cddr23: Over the last month, in the average 24-hour period you were drinking, how many ALCOHOLIC DRINKS did you have?
+
+cddr26: During the past year (or 365 days), in the average 24-hour period you were drinking how many total drinks did you have? 
+
+cddr27: Have you ever consumed 4+ (females) / 5+ (males) drinks within an occasion? (y/n)
+
+cddr30: During the past year, how many times have you consumed 4+ (females) / 5+ (males) drinks within an occasion? (0-365) 
+
+cddr31: During the last 30 days, how many times have you consumed 4+ (females) / 5+ (males) drinks within an occasion? (0-30)
+
+
+Recoding some NAs to 0's to reflect an absence of drinking behavior and not a true missing value. DOing this for cddr21/22/30/31
+
+```{r}
+# Recode past year drinking days to 0 if participants skipped out of CDDR items due to no history of use
+cddr0_8$cddr21 <- ifelse(is.na(cddr0_8$cddr21),
+                                 ifelse(is.na(cddr0_8$age),NA,0),cddr0_8$cddr21)
+
+# Recode past month drinking days to 0 if participants skipped out of CDDR items due to no history of use
+cddr0_8$cddr22 <- ifelse(is.na(cddr0_8$cddr22),
+                                 ifelse(is.na(cddr0_8$age),NA,0),cddr0_8$cddr22)
+
+# Recode PastYear Binges to 0 if participants skipped out of CDDR items due to no history of use
+cddr0_8$cddr30 <- ifelse(is.na(cddr0_8$cddr30),
+                                 ifelse(is.na(cddr0_8$age),NA,0),cddr0_8$cddr30)
+
+# Recode Binge Past Month
+cddr0_8$cddr31 <- ifelse(is.na(cddr0_8$cddr31),
+                                 ifelse(is.na(cddr0_8$age),NA,0),cddr0_8$cddr31)
+```
+
+
+
+Composite alcohol scoring. Kiss 
+
+```{r}
+
+```
+
+
+Some plots
+
+```{r}
+response_columns <- c("cddr16", "cddr17", "cddr18", "cddr19", 
+"cddr21", "cddr22", "cddr23", "cddr26", "cddr27", "cddr30", "cddr31")
+
+
+cddr_plots <- list()
+
+
+# Loop through each response column and fit the model
+for (response in response_columns) {
+  
+  # Plot
+  cddr_plots[[response]] <- ggplot(cddr0_8, aes(x = age, 
+                                                y = .data[[response]], 
+                                                group = subject)) + 
+    geom_line(alpha = 0.2) +
+    geom_smooth(aes(group = 1), 
+                method = "loess", 
+                color = "blue") +
+    labs(title = paste("Plot for", response), 
+         x = "Age", 
+         y = response) +
+  theme_modern()
+}
+```
+
+Looking at mean alcohol use past year across time points.
+
+```{r}
+cddr0_8 %>%
+  group_by(visit) %>%
+  summarize(mean_cddr21 = mean(cddr21, na.rm = TRUE))
+```
+
+
+Write csv in clean_data
+
+```{r}
+write.csv(cddr0_8, file = "./clean_data/cddr0_8.csv", row.names = FALSE)
+```
+

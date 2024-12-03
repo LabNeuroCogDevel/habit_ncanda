@@ -1,0 +1,61 @@
+---
+title: "ncanda_demographics_cleaning"
+author: "Daniel Petrie"
+date: "2024-08-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(BlandAltmanLeh)
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R")
+
+#0-7
+dem0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/demographics.csv", header = TRUE)
+
+#8
+dem8 <- read.csv("H:/Raw/Datasets/NCANDA/followup_8y/NCANDA_RELEASE_8Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/demographics.csv", header = TRUE)
+```
+
+Variables I want (most importantly sex variable):
+id
+visit
+site
+sex
+visit_age
+
+
+Notes: 
+- I also should create an additional script to calculate demographic information
+- Siblings should be considered at some point
+- Baseline drinking should also be considered at some point
+
+```{r}
+dem0_7_sub <- dem0_7 %>%
+  select(subject, visit, site, sex, visit_age, scanner)
+
+dem8_sub <- dem8 %>%
+  select(subject, visit, site, sex, visit_age, scanner)
+```
+
+Binding and arranging.
+
+```{r}
+dem0_8 <- bind_rows(dem0_7_sub, dem8_sub) %>%
+  arrange(subject, visit)
+```
+
+Saving file
+
+```{r}
+#write.csv(dem0_8, file = "./clean_data/demographics.csv", row.names = FALSE)
+```
+

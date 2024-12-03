@@ -1,0 +1,276 @@
+---
+title: "ncanda_ASEBA_cleaning"
+author: "Daniel Petrie"
+date: "2024-08-26"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Global}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(BlandAltmanLeh)
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R")
+
+#ASEBA data. I want OCD and stress variables
+#Baseline through year 8
+cbcl0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/additional/cbc.csv", header = TRUE)
+asr0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/additional/asr.csv", header = TRUE)
+ysr0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/additional/ysr.csv", header = TRUE)
+##Year 9
+#I believe only ASR is collected. If youngest subject was 12, then they should be adults by now...
+asr8 <- read.csv("H:/Raw/Datasets/NCANDA/followup_8y/NCANDA_RELEASE_8Y_REDCAP_MEASUREMENTS_V01/summaries/additional/asr.csv", header = TRUE)
+```
+
+Compulsions were assessed using three measures from the Achenback System of Empirically based Assessments (ASEBA; Achenbach & Rescorla (2001); Achenback & Rescorla (2003)):
+
+Child Behavior Checklist (CBCL): Parent report for youth under age 18.
+Youth Self-Report (YSR): Youth younger than 18.
+Adult Self-Report (ASR): Youth older than 18.
+
+Variable I want:
+OCD (raw, t-score, percentile)
+
+
+**Cleaning**
+
+```{r Cleaning}
+asr0_7_sub <- asr0_7 %>%
+  select(subject, visit, asr_ocd_raw, asr_ocd_t, asr_ocd_pct)
+
+asr8_sub <- asr8 %>%
+  select(subject, visit, asr_ocd_raw, asr_ocd_t, asr_ocd_pct)
+
+cbcl0_7_sub <- cbcl0_7 %>%
+  select(subject, visit, cbcl_ocd_raw, cbcl_ocd_t, cbcl_ocd_pct)
+
+ysr0_7_sub <- ysr0_7 %>%
+  select(subject, visit, ysr_ocd_raw, ysr_ocd_t, ysr_ocd_pct)
+```
+
+
+I think my approach would be to show how similar YSR and CBCL are. If they are close, then I will just use YSR for youth and ASR for adults.
+
+I'll create two files (eventually). First will be ASR/YSR for the main analytic data set. Second file will contain ASR/YSR/CBCL. This will be used to check how similar adult and youth reports are. This will be handled in a different script.
+
+
+```{r}
+#Full join to get a feel of the data
+cbcl_ysr <- full_join(cbcl0_7_sub, ysr0_7_sub, by = c("subject", "visit"))
+
+#Overall means
+psych::describe(cbcl_ysr)
+#Interesting, looks like t scores and % are a bit more similar.
+
+#Correlation of raw scores
+cor(cbcl_ysr$cbcl_ocd_raw, cbcl_ysr$ysr_ocd_raw, use = "complete.obs")
+#cor(cbcl_ysr$cbcl_ocd_raw, cbcl_ysr$ysr_ocd_raw, use = "complete.obs", method = "spearman")
+
+# Distributions, bivariate associations, and correlation
+ggpairs(cbcl_ysr[,c("cbcl_ocd_raw","ysr_ocd_raw")])
+```
+
+Compute difference (youth - parent) score and see what that looks like. 
+
+If +, youth scores are larger than parent scores, if -, than youth scores are smaller than parents.
+
+If centered around 0, then that would imply that scores are reasonable.
+
+```{r Difference score test}
+#Difference score check.
+cbcl_ysr$ocd_raw_diff <- cbcl_ysr$ysr_ocd_raw - cbcl_ysr$cbcl_ocd_raw
+psych::describe(cbcl_ysr$ocd_raw_diff)
+
+#Plotting difference scores as histogram
+ggplot(cbcl_ysr, aes(x = ocd_raw_diff)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of Difference Scores",
+       x = "Difference Score (Child - Parent)",
+       y = "Frequency") +
+  theme_minimal()
+
+#Plotting difference scores as boxplot
+ggplot(cbcl_ysr, aes(y = ocd_raw_diff)) +
+  geom_boxplot(fill = "orange", color = "black") +
+  labs(title = "Boxplot of Difference Scores",
+       y = "Difference Score (Child - Parent)") +
+  theme_minimal()
+
+#Plotting difference scores as scatterplot
+ggplot(cbcl_ysr, aes(x = cbcl_ocd_raw, y = ysr_ocd_raw)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Child vs. Parent OCD Symptom Scores",
+       x = "Parent Score",
+       y = "Child Score") +
+  theme_minimal()
+```
+
+T-test to look at difference
+
+```{r t-test}
+t.test(cbcl_ysr$cbcl_ocd_raw, cbcl_ysr$ysr_ocd_raw, paired = TRUE)
+```
+
+After doing all of this, I think the best approach is to use the YSR in the main analyses, then do a supplementary analysis with the cbcl scores as a replacement. I can also see what other OCD papers using the ASEBA have done for inspiration.
+
+Next, I will combine YSR and ASR into one file and save.
+
+```{r Merging ASR and YSR}
+# YSR
+ysr0_7_sub_merge <- ysr0_7_sub %>%
+  mutate(aseba = "ysr") %>%
+  #Rename columns by removing the "ysr_" prefix
+  rename_with(~ gsub("^ysr_", "", .), starts_with("ysr_"))
+
+# ASR 0-7
+asr0_7_sub_merge <- asr0_7_sub %>%
+  mutate(aseba = "asr") %>%
+  #Rename columns by removing the "ysr_" prefix
+  rename_with(~ gsub("^asr_", "", .), starts_with("asr_"))
+
+# ASR 8
+asr8_sub_merge <- asr8_sub %>%
+  mutate(aseba = "asr") %>%
+  #Rename columns by removing the "ysr_" prefix
+  rename_with(~ gsub("^asr_", "", .), starts_with("asr_"))
+
+#bind_rows and arrange by id and visit
+ysr_asr <- bind_rows(ysr0_7_sub_merge, asr0_7_sub_merge, asr8_sub_merge) %>%
+  arrange(subject, visit) %>%
+   mutate(visit_numeric = case_when(
+    visit == "baseline" ~ 0,
+    visit == "followup_1y" ~ 1,
+    visit == "followup_2y" ~ 2,
+    visit == "followup_3y" ~ 3,
+    visit == "followup_4y" ~ 4,
+    visit == "followup_5y" ~ 5,
+    visit == "followup_6y" ~ 6,
+    visit == "followup_7y" ~ 7,
+    visit == "followup_8y" ~ 8,
+    TRUE ~ NA_real_  # Handle any unexpected visit values
+  ))
+
+#making visit numeric
+
+```
+
+
+Plotting some trajectories
+
+```{r}
+ggplot(ysr_asr %>% group_by(subject) %>% filter(n() > 7), 
+       aes(x = visit_numeric, y = ocd_raw, group = subject)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Longitudinal OCD Raw Scores",
+       x = "Visit",
+       y = "OCD Raw Score") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+Looking at ICCs
+
+```{r}
+model_0 <- lmer(ocd_raw ~ 1 + (1|subject), data = ysr_asr, na.action = na.exclude)
+summary(model_0)
+
+icc(model_0)
+#52% variability between people, and 48% variability within person. Great amount of within-person varaince to model!
+ysr_asr$ocd_raw_pred <- predict(model_0)
+ysr_asr$ocd_raw_resid<- residuals(model_0)
+
+#plotting PREDICTED intraindividual change
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_pred, group = subject)) +
+  ggtitle("Unconditional Means Model") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("PREDICTED OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_resid, group = subject)) +
+  ggtitle("Unconditional Means Model (residuals)") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("RESIDUALS OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+
+```
+
+
+Seeing if growth is a thing.
+
+```{r}
+model_1 <- lmer(ocd_raw ~ 1 + visit_numeric + (1|subject), data = ysr_asr, na.action = na.exclude)
+summary(model_1)
+
+#52% variability between people, and 48% variability within person. Great amount of within-person varaince to model!
+ysr_asr$ocd_raw_pred1 <- predict(model_1)
+ysr_asr$ocd_raw_resid1 <- residuals(model_1)
+
+#plotting PREDICTED intraindividual change
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_pred1, group = subject)) +
+  ggtitle("Fixed Linear, Random Intercept") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("PREDICTED OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_resid1, group = subject)) +
+  ggtitle("Fixed Linear, Random Intercept (residuals)") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("RESIDUALS OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+
+```
+
+
+Seeing what random intercepts look like
+
+Seeing if growth is a thing.
+
+```{r}
+model_2 <- lmer(ocd_raw ~ 1 + visit_numeric + (1 + visit_numeric|subject), data = ysr_asr, na.action = na.exclude)
+summary(model_2)
+
+ysr_asr$ocd_raw_pred2 <- predict(model_2)
+ysr_asr$ocd_raw_resid2 <- residuals(model_2)
+
+#plotting PREDICTED intraindividual change
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_pred2, group = subject)) +
+  ggtitle("Fixed Linear, Random Linear") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("PREDICTED OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+
+ggplot(data = ysr_asr, aes(x = visit_numeric, y = ocd_raw_resid2, group = subject)) +
+  ggtitle("Fixed Linear, Random Intercept (residuals)") +
+  geom_line() +
+  xlab("Visit") + 
+  ylab("RESIDUALS OCD Raw Score") +
+  geom_smooth(method = "lm", group = 1)
+```
+
+We can also compare models to see if adding random slope (juice) is needed (worth the squeeze)
+
+```{r}
+anova(model_1, model_2)
+```
+
+Results from the anova test suggest that the more complex model with random slopes is a better fit.
+
+Save csv in ./clean_data
+
+```{r}
+#write.csv(ysr_asr, file = "./clean_data/ysr_asr0_8.csv", row.names = FALSE)
+```
