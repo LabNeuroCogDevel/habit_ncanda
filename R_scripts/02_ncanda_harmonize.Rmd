@@ -1,0 +1,374 @@
+---
+title: "02_ncanda_harmonize"
+author: "Daniel Petrie"
+date: "2024-12-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This script harmonizes the neuroimaging data across sites (and scanner upgrades). Note to self. I removed high motion subjects in 01_merge script.
+
+```{r Global}
+library("ggplot2") #For plotting
+library("GGally") #ggpairs()
+library("tidyverse") #Wranglin
+library("dplyr") #Wranglin
+library("interactions")
+library("lme4") #MLM
+library("lmerTest") #p-vals
+library("ggeffects") 
+library("neuroCombat") #Harminization
+library(see)
+library(ggpubr)
+#WD
+setwd("H:/Dan/ncanda/R")
+
+#Pain in the ass, but will do for seeded ROIs and networks
+#seed Gordon ROI
+dat_putamen <- read.csv("clean_data/no_preprocess_putamen_seed.csv", header = TRUE)
+dat_caudate <- read.csv("clean_data/no_preprocess_caudate_seed.csv", header = TRUE)
+dat_nacc <- read.csv("clean_data/no_preprocess_nacc_seed.csv", header = TRUE)
+dat <- read.csv("clean_data/no_preprocess_gordon_network_seed.csv", header = TRUE)
+
+dates <- read.csv("./scanner_issue_tat2/NCANDADataEntry-MRICompleted_DATA_2024-11-21_1546.csv", header = TRUE)
+```
+
+Cleaning Dates/Scanner Upgrades data
+
+```{r Cleaning Dates for merging}
+dates <- dates %>%
+  mutate(
+    mri_rsfmri_date = mdy(mri_rsfmri_date), 
+    redcap_event_name = gsub("_visit", "", redcap_event_name), 
+    redcap_event_name = ifelse(grepl("baseline", redcap_event_name), 
+                               "baseline", 
+                               paste0("followup_", redcap_event_name))) %>%
+  select(mri_sid, redcap_event_name, mri_rsfmri_date, mri_scanner) %>%
+  rename(visit = redcap_event_name,
+         subject = mri_sid) %>% 
+  mutate(visit_numeric = case_when(
+           visit == "baseline" ~ 0,
+           visit == "followup_1y" ~ 1,
+           visit == "followup_2y" ~ 2,
+           visit == "followup_3y" ~ 3,
+           visit == "followup_4y" ~ 4,
+           visit == "followup_5y" ~ 5,
+           visit == "followup_6y" ~ 6,
+           visit == "followup_7y" ~ 7,
+           visit == "followup_8y" ~ 8)) %>%
+   mutate(
+    mri_scanner = gsub("MEDICAL SYSTEMS ", "", mri_scanner),
+    mri_scanner = case_when(
+      mri_scanner == "Siemens Healthineers MAGNETOM Prisma Fit MRC67096" ~ "SIEMENS Prisma_fit MRC67096",
+      mri_scanner == "GE SIGNA UHP bia5bia5" ~ "GE SIGNA UHP bia5",
+      mri_scanner == "SIEMENS TrioTim" ~ "SIEMENS TrioTim MRC35139",
+      mri_scanner == "GE DISCOVERY MR750 MRIPSMR" ~ "GE DISCOVERY MR750 750clic",
+      mri_scanner == "GE DISCOVERY MR750 MR2OW1" & visit_numeric <= 4 ~ "GE DISCOVERY MR750 MR2OW1 PRE",
+      mri_scanner == "GE DISCOVERY MR750 MR2OW1" & visit_numeric >= 5 ~ "GE DISCOVERY MR750 MR2OW1 POST",
+      mri_scanner == "GE DISCOVERY MR750 bia5" & visit_numeric <= 4 ~ "GE DISCOVERY MR750 bia5 PRE",
+      mri_scanner == "GE DISCOVERY MR750 bia5" & visit_numeric >= 5 ~ "GE DISCOVERY MR750 bia5 POST",
+      TRUE ~ mri_scanner))
+```
+
+Merging imaging data and scanner information.
+
+```{r}
+#Putamen
+dat_putamen <- merge(dat_putamen, dates, by = c("subject", "visit"))
+
+table(dat_putamen$mri_scanner, dat_putamen$site)
+
+#Caudate
+dat_caudate <- merge(dat_caudate, dates, by = c("subject", "visit"))
+
+table(dat_caudate$mri_scanner, dat_caudate$site)
+
+#NAcc
+dat_nacc <- merge(dat_nacc, dates, by = c("subject", "visit"))
+
+table(dat_nacc$mri_scanner, dat_nacc$site)
+
+#Networks
+dat <- merge(dat, dates, by = c("subject", "visit"))
+
+table(dat$mri_scanner, dat$site)
+```
+
+Neurocombat (x4)
+
+Overall note... this code can be shortened pretty dramatically.
+
+```{r Neurocombat tissue iron}
+temp_dat_iron <- dat_putamen %>% 
+  #Selecting columns to harmonize on and other study covariates.
+  dplyr::select("subject", "visit", "age", "sex", "mri_scanner", contains("iron")) %>% 
+  #Getting rid of NA's
+  drop_na("subject", "visit", "age", "sex", "mri_scanner", contains("iron")) %>% 
+  distinct()
+
+##No letters just numbers
+temp_dat_iron$sex <- gsub("M", "1", temp_dat_iron$sex)
+temp_dat_iron$sex <- gsub("F", "2", temp_dat_iron$sex)
+
+## actual combat 
+batch <- as.factor(temp_dat_iron$mri_scanner)
+mod1 <- as.factor(temp_dat_iron$sex)
+mod2 <- as.numeric(temp_dat_iron$age)
+#subject <- as.numeric(temp_dat_putamen_dates$subject)
+
+mod <- model.matrix(~mod2+mod1)
+
+temp_dat_iron_combat <- temp_dat_iron %>% ungroup %>%
+  dplyr::select(-subject, -mri_scanner, -sex, -age, -visit)
+
+temp_dat_iron_combat_t <- temp_dat_iron_combat %>% t %>% as.matrix
+
+data.harmonized_temp_dat_iron_combat_t <- neuroCombat(dat=temp_dat_iron_combat_t, 
+                                                               batch=batch, 
+                                                               mod=mod)
+
+data.harmonized_temp_dat_iron_combat_t <- data.harmonized_temp_dat_iron_combat_t$dat.combat  
+
+temp_dat_iron_combat_harmonized <- data.harmonized_temp_dat_iron_combat_t %>% t %>% as.data.frame
+
+#Append suffix to all columns in harmonized data.
+colnames(temp_dat_iron_combat_harmonized) <-
+  paste(colnames(temp_dat_iron_combat_harmonized), "_harm", sep = "")
+
+iron_harm <- cbind(temp_dat_iron, temp_dat_iron_combat_harmonized)
+```
+
+Note. The harmonized iron data (iron_harm) above can be merged into data frames at the end of this script for final preprocessing and analyses. I also want to add dates appropiately.
+
+Neurocombat putamen seed
+
+```{r Neurocombat putamen FC}
+temp_df_put <- dat_putamen %>% 
+  #Selecting columns to harmonize on and other study covariates.
+  dplyr::select("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  #Getting rid of NA's
+  drop_na("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  distinct()
+
+##hypothetical combat
+temp_df_put$sex <- gsub("M", "1", temp_df_put$sex)
+temp_df_put$sex <- gsub("F", "2", temp_df_put$sex)
+
+## actual combat 
+batch <- as.factor(temp_df_put$mri_scanner) #change
+mod1 <- as.factor(temp_df_put$sex)
+mod2 <- as.numeric(temp_df_put$age)
+
+mod <- model.matrix(~mod2+mod1)
+
+temp_df_put_combat <- temp_df_put %>% ungroup %>%
+  dplyr::select(-subject, -mri_scanner, -sex, -age, -visit)
+
+temp_df_put_combat_t <- temp_df_put_combat %>% t %>% as.matrix
+
+data.harmonized_put <- neuroCombat(dat=temp_df_put_combat_t, batch=batch, mod=mod)
+
+temp_df_put_combat_t_harmonized <- data.harmonized_put$dat.combat  
+
+temp_df_put_combat_harmonized <- temp_df_put_combat_t_harmonized %>% t %>% as.data.frame
+
+#Append suffix to all columns in harmonized data.
+colnames(temp_df_put_combat_harmonized) <-
+  paste(colnames(temp_df_put_combat_harmonized), "_harm", sep = "")
+
+put_harm <- cbind(temp_df_put, temp_df_put_combat_harmonized)
+```
+
+Saving unharmoinzed/harmoinzed data set for NCANDA folks.
+
+```{r}
+#put_harm_sub <- put_harm %>%
+#  select(subject, visit, contains("harm"))
+#
+#iron_harm_sub <- iron_harm %>%
+#  select(subject, visit, contains("harm"))
+#
+#
+#ncanda_put_seed_iron_noharm_harm <- merge(dat_putamen, put_harm_sub, by = c("subject", "visit"))
+#
+#ncanda_put_seed_iron_noharm_harm <- merge(ncanda_put_seed_iron_noharm_harm, iron_harm_sub,
+#                                          by = c("subject", "visit"))
+#
+#write.csv(ncanda_put_seed_iron_noharm_harm, 
+#          file = "./scanner_issue_tat2/ncanda_put_seed_iron_noharm_harm.csv", 
+#          row.names = FALSE)
+```
+
+
+Note. I saved a unharmonized/harmonized data frame at this step for NCANDA scanner upgrade documents. But below I will just retain harmonized data for preprocessing.
+
+Neurocombat caudate seed
+
+```{r Neurocombat caudate FC}
+temp_df_caudate <- dat_caudate %>% 
+  #Selecting columns to harmonize on and other study covariates.
+  dplyr::select("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  #Getting rid of NA's
+  drop_na("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  distinct()
+
+##hypothetical combat
+temp_df_caudate$sex <- gsub("M", "1", temp_df_caudate$sex)
+temp_df_caudate$sex <- gsub("F", "2", temp_df_caudate$sex)
+
+## actual combat 
+batch <- as.factor(temp_df_caudate$mri_scanner) #change
+mod1 <- as.factor(temp_df_caudate$sex)
+mod2 <- as.numeric(temp_df_caudate$age)
+
+mod <- model.matrix(~mod2+mod1)
+
+temp_df_caudate_combat <- temp_df_caudate %>% ungroup %>%
+  dplyr::select(-subject, -mri_scanner, -sex, -age, -visit)
+
+temp_df_caudate_combat_t <- temp_df_caudate_combat %>% t %>% as.matrix
+
+data.harmonized_caudate <- neuroCombat(dat=temp_df_caudate_combat_t, batch=batch, mod=mod)
+
+temp_df_caudate_combat_t_harmonized <- data.harmonized_caudate$dat.combat  
+
+temp_df_caudate_combat_harmonized <- temp_df_caudate_combat_t_harmonized %>% t %>% as.data.frame
+
+#Append suffix to all columns in harmonized data.
+colnames(temp_df_caudate_combat_harmonized) <-
+  paste(colnames(temp_df_caudate_combat_harmonized), "_harm", sep = "")
+
+caudate_harm <- cbind(temp_df_caudate, temp_df_caudate_combat_harmonized)
+```
+
+Neurocombat nacc seed
+
+```{r Neurocombat nacc FC}
+temp_df_nacc <- dat_nacc %>% 
+  #Selecting columns to harmonize on and other study covariates.
+  dplyr::select("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  #Getting rid of NA's
+  drop_na("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  distinct()
+
+##hypothetical combat
+temp_df_nacc$sex <- gsub("M", "1", temp_df_nacc$sex)
+temp_df_nacc$sex <- gsub("F", "2", temp_df_nacc$sex)
+
+## actual combat 
+batch <- as.factor(temp_df_nacc$mri_scanner) #change
+mod1 <- as.factor(temp_df_nacc$sex)
+mod2 <- as.numeric(temp_df_nacc$age)
+
+mod <- model.matrix(~mod2+mod1)
+
+temp_df_nacc_combat <- temp_df_nacc %>% ungroup %>%
+  dplyr::select(-subject, -mri_scanner, -sex, -age, -visit)
+
+temp_df_nacc_combat_t <- temp_df_nacc_combat %>% t %>% as.matrix
+
+data.harmonized_nacc <- neuroCombat(dat=temp_df_nacc_combat_t, batch=batch, mod=mod)
+
+temp_df_nacc_combat_t_harmonized <- data.harmonized_nacc$dat.combat  
+
+temp_df_nacc_combat_harmonized <- temp_df_nacc_combat_t_harmonized %>% t %>% as.data.frame
+
+#Append suffix to all columns in harmonized data.
+colnames(temp_df_nacc_combat_harmonized) <-
+  paste(colnames(temp_df_nacc_combat_harmonized), "_harm", sep = "")
+
+nacc_harm <- cbind(temp_df_nacc, temp_df_nacc_combat_harmonized)
+```
+
+
+Neurocombat gordon network
+
+```{r Neurocombat nacc FC}
+temp_df <- dat %>% 
+  #Selecting columns to harmonize on and other study covariates.
+  dplyr::select("subject", "visit", "age", "sex", 
+                "mri_scanner", matches("_putamen|_caudate|_accumbens")) %>% 
+  #Getting rid of NA's
+  drop_na("subject", "visit", "age", "sex", "mri_scanner", matches("_\\d+")) %>% 
+  distinct()
+
+##hypothetical combat
+temp_df$sex <- gsub("M", "1", temp_df$sex)
+temp_df$sex <- gsub("F", "2", temp_df$sex)
+
+## actual combat 
+batch <- as.factor(temp_df$mri_scanner) #change
+mod1 <- as.factor(temp_df$sex)
+mod2 <- as.numeric(temp_df$age)
+
+mod <- model.matrix(~mod2+mod1)
+
+temp_df_combat <- temp_df %>% ungroup %>%
+  dplyr::select(-subject, -mri_scanner, -sex, -age, -visit)
+
+temp_df_combat_t <- temp_df_combat %>% t %>% as.matrix
+
+data.harmonized <- neuroCombat(dat=temp_df_combat_t, batch=batch, mod=mod)
+
+temp_df_combat_t_harmonized <- data.harmonized$dat.combat  
+
+temp_df_combat_harmonized <- temp_df_combat_t_harmonized %>% t %>% as.data.frame
+
+#Append suffix to all columns in harmonized data.
+colnames(temp_df_combat_harmonized) <-
+  paste(colnames(temp_df_combat_harmonized), "_harm", sep = "")
+
+dat_harm <- cbind(temp_df, temp_df_combat_harmonized)
+```
+
+Creating the harmonized data frames with all the behavioral variables included.
+
+```{r}
+#I'll use dat_putamen for extraction of other variable to merge with the harmonized data.
+dem_beh <-  dat_putamen %>%
+  select("subject", "age", "sex", "visit", "visit_numeric", 
+         "mri_rsfmri_date", "mri_scanner", "site", "scanner", 
+         "cddr16", "cddr17", "cddr18", "cddr19", "cddr21", "cddr22", "cddr23", 
+         "cddr26", "cddr27", "cddr30", "cddr31", "drinking_category_month", "ocd_raw", "ocd_t", "ocd_pct", 
+         "aseba")
+
+#Selecting harmonized variables to merge
+put_harm_sub <- put_harm %>%
+  select(subject, visit, contains("harm"))
+
+iron_harm_sub <- iron_harm %>%
+  select(subject, visit, contains("harm"))
+
+caudate_harm_sub <- caudate_harm %>%
+  select(subject, visit, contains("harm"))
+
+nacc_harm_sub <- nacc_harm %>%
+  select(subject, visit, contains("harm"))
+
+dat_harm_sub <- dat_harm %>%
+  select(subject, visit, contains("harm"))
+
+#Merging the FC and iron data with the behavioral data (x4)
+putamen <- left_join(dem_beh, put_harm_sub, by = c("subject", "visit"))
+putamen <- left_join(putamen, iron_harm_sub, by = c("subject", "visit"))
+
+#Merging the FC and iron data with the behavioral data (x4)
+caudate <- left_join(dem_beh, caudate_harm_sub, by = c("subject", "visit"))
+caudate <- left_join(caudate, iron_harm_sub, by = c("subject", "visit"))
+
+#Merging the FC and iron data with the behavioral data (x4)
+nacc <- left_join(dem_beh, nacc_harm_sub, by = c("subject", "visit"))
+nacc <- left_join(nacc, iron_harm_sub, by = c("subject", "visit"))
+
+#Merging the FC and iron data with the behavioral data (x4)
+gordon <- left_join(dem_beh, dat_harm_sub, by = c("subject", "visit"))
+gordon  <- left_join(gordon , iron_harm_sub, by = c("subject", "visit"))
+
+
+write.csv(putamen, file = "clean_data/no_preprocess_harm_putamen_seed.csv", row.names = FALSE)
+write.csv(caudate, file = "clean_data/no_preprocess_harm_caudate_seed.csv", row.names = FALSE)
+write.csv(nacc, file = "clean_data/no_preprocess_harm_nacc_seed.csv", row.names = FALSE)
+write.csv(gordon, file = "clean_data/no_preprocess_harm_gordon_network_seed.csv", row.names = FALSE)
+```
+

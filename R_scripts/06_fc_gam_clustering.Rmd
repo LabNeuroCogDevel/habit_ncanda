@@ -1,0 +1,980 @@
+---
+title: "08_fc_clustering"
+output: html_document
+date: "2025-05-05"
+editor_options: 
+  chunk_output_type: console
+---
+
+K-means clustering of univariate growth models from seeded networks (NAcc, caudate, putamen).
+
+This script clusters FC results within each seeded network. General idea is to not throw away meaningful age related trajectories. Instead, it might make more sense to cluster these trajectories and then use these clusters at the individual level to make useful predictions.
+
+```{r}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(lme4)
+library(lmerTest)
+library(GGally)
+library(glmmTMB)
+library(ggeffects)
+library("mgcv")
+library(see)
+library(ggseg)
+library(ggsegGordon)
+library(kableExtra)
+library(clipr)
+library(ggpubr)
+library(gratia)
+library(factoextra)
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R")
+
+#Gam model results
+results_putamen <- read.csv("H:/Dan/ncanda/R/results/gam_models_putamen/gam_model_results_putamen.csv", header = TRUE)
+results_caudate <- read.csv("H:/Dan/ncanda/R/results/gam_models_caudate/gam_model_results_caudate.csv", header = TRUE)
+results_nacc <- read.csv("H:/Dan/ncanda/R/results/gam_models_nacc/gam_model_results_nacc.csv", header = TRUE)
+```
+
+
+Cleaning results data.
+
+
+```{r}
+#Creating sig column, filter by sig only, create -log p-value, change response to region, and remove "_harm".
+results_putamen_sub <- results_putamen %>% 
+  mutate(
+    p_bonferroni = p.adjust(p_value_age, method = "bonferroni"),
+    significant_fdr = p_fdr < 0.05, 
+    significant_bonferroni = p_bonferroni < 0.05, 
+    log_p_fdr = pmin(-log10(pmax(p_fdr, 1e-300)),6), #Check on this later, but no inf
+    log_p_bonferroni = pmin(-log10(pmax(p_bonferroni, 1e-300)),6),
+    region = str_remove(response, "_harm")) %>% 
+  dplyr::select(region, everything()) %>% 
+  filter(significant_fdr == TRUE | significant_bonferroni == TRUE)
+
+#Creating sig column, filter by sig only, create -log p-value, change response to region, and remove "_harm".
+results_caudate_sub <- results_caudate %>% 
+  mutate(
+    p_bonferroni = p.adjust(p_value_age, method = "bonferroni"),
+    significant_fdr = p_fdr < 0.05, 
+    significant_bonferroni = p_bonferroni < 0.05, 
+    log_p_fdr = pmin(-log10(pmax(p_fdr, 1e-300)),6), #Check on this later, but no inf
+    log_p_bonferroni = pmin(-log10(pmax(p_bonferroni, 1e-300)),6),
+    region = str_remove(response, "_harm")) %>% 
+  dplyr::select(region, everything()) %>% 
+  filter(significant_fdr == TRUE | significant_bonferroni == TRUE)
+
+#Creating sig column, filter by sig only, create -log p-value, change response to region, and remove "_harm".
+results_nacc_sub <- results_nacc %>% 
+  mutate(
+    p_bonferroni = p.adjust(p_value_age, method = "bonferroni"),
+    significant_fdr = p_fdr < 0.05, 
+    significant_bonferroni = p_bonferroni < 0.05, 
+    log_p_fdr = pmin(-log10(pmax(p_fdr, 1e-300)),6), #Check on this later, but no inf
+    log_p_bonferroni = pmin(-log10(pmax(p_bonferroni, 1e-300)),6),
+    region = str_remove(response, "_harm")) %>% 
+  dplyr::select(region, everything()) %>% 
+  filter(significant_fdr == TRUE | significant_bonferroni == TRUE)
+
+#Combining into two main data frames. 
+#One for significance, and other for growth models.
+
+#Significance data
+#Adding index column
+results_putamen_sub <- results_putamen_sub %>% mutate(seed = "putamen")
+results_caudate_sub <- results_caudate_sub %>% mutate(seed = "caudate")
+results_nacc_sub <- results_nacc_sub %>% mutate(seed = "nacc")
+
+#bind rows
+results_combined <- bind_rows(results_putamen_sub, results_caudate_sub, results_nacc_sub)
+
+
+#NOTE! This is where new approach deviates from old approach. Below code filers by rows where parcel is sig across seeds.
+#Filter by significant, then filter by whether all three seeds are present.
+results_significant <- results_combined %>%
+  filter(significant_bonferroni)
+```
+
+142 clusters out of 999 were significant after Bonferroni correction.
+
+From here, I need to read in only significant parcels and create the data frame for clustering
+
+Reading in predictions.
+
+```{r}
+putamen_prediction_files <- list.files("H:/Dan/ncanda/R/results/gam_models_putamen/predictions/", full.names = TRUE)
+putamen_predictions_list <- lapply(putamen_prediction_files, read.csv)
+
+putamen_predictions_list <- lapply(putamen_predictions_list, function(df) {
+  df$seed <- "putamen"
+  return(df)
+})
+
+nacc_prediction_files <- list.files("H:/Dan/ncanda/R/results/gam_models_nacc/predictions/", full.names = TRUE)
+
+nacc_predictions_list <- lapply(nacc_prediction_files, read.csv)
+
+nacc_predictions_list <- lapply(nacc_predictions_list, function(df) {
+  df$seed <- "nacc"
+  return(df)
+})
+
+caudate_prediction_files <- list.files("H:/Dan/ncanda/R/results/gam_models_caudate/predictions/", full.names = TRUE)
+
+caudate_predictions_list <- lapply(caudate_prediction_files, read.csv)
+
+caudate_predictions_list <- lapply(caudate_predictions_list, function(df) {
+  df$seed <- "caudate"
+  return(df)
+})
+```
+
+Now I have a list of prediction data frames (SEED_predictions_list), where each data frame contains model predictions for one seed and one response region (e.g., "Auditory_1_harm").
+
+The goal of below function is to keep only the data frames that correspond to significant age associations, as identified in the character vector significant_ids.
+
+For each df in the list ROI_predictions_list, the function:
+
+Extracts the first row's seed and response values.
+Example:
+df$seed[1] = "putamen"
+df$response[1] = "Auditory_1_harm"
+current_id = "putamen_Auditory_1_harm"
+
+Checks if that current_id appears in significant_ids, which is a list of identifiers for significant results.
+
+Keeps only those data frames where the current_id is found in significant_ids.
+
+Extracting just the significant predictions.
+
+```{r}
+# Create unique identifiers for your significant results
+significant_ids <- paste(results_significant$seed, results_significant$response, sep = "_")
+
+
+#Putamen
+#Filter based on significance.
+# Filter the list to keep only elements that match significant results
+filtered_putamen_predictions <- Filter(function(df) {
+  # Create identifier from the first row of each dataframe
+  # (assuming response and seed are consistent within each dataframe)
+  current_id <- paste(df$seed[1], df$response[1], sep = "_")
+  
+  # Check if this identifier exists in our significant results
+  return(current_id %in% significant_ids)
+}, putamen_predictions_list)
+
+#NAcc
+#Filter based on significance.
+# Filter the list to keep only elements that match significant results
+filtered_nacc_predictions <- Filter(function(df) {
+  # Create identifier from the first row of each dataframe
+  # (assuming response and seed are consistent within each dataframe)
+  current_id <- paste(df$seed[1], df$response[1], sep = "_")
+  
+  # Check if this identifier exists in our significant results
+  return(current_id %in% significant_ids)
+}, nacc_predictions_list)
+
+
+#Caudate
+#Filter based on significance
+# Filter the list to keep only elements that match significant results
+filtered_caudate_predictions <- Filter(function(df) {
+  # Create identifier from the first row of each dataframe
+  # (assuming response and seed are consistent within each dataframe)
+  current_id <- paste(df$seed[1], df$response[1], sep = "_")
+  
+  # Check if this identifier exists in our significant results
+  return(current_id %in% significant_ids)
+}, caudate_predictions_list)
+
+# Check how many elements we kept
+# Check how many elements we kept
+cat("Kept", length(filtered_putamen_predictions), "out of", length(putamen_predictions_list), "elements\n")
+cat("Kept", length(filtered_nacc_predictions), "out of", length(nacc_predictions_list), "elements\n")
+cat("Kept", length(filtered_caudate_predictions), "out of", length(caudate_predictions_list), "elements\n")
+```
+
+Now I have model for each seeded network stored in a list object. First, I kinda just want to see what the trajectories look like. Then, I will create a little function to run the clustering analyses, so I can compare across networks more easily.
+
+```{r}
+putamen_df <- bind_rows(filtered_putamen_predictions)
+
+ggplot(putamen_df, aes(x = x, y = predicted, group = response, color = response)) +
+  geom_line(alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "All Predicted Trajectories - Putamen",
+       x = "Age",
+       y = "Predicted Connectivity") +
+  theme(legend.position = "none")
+
+caudate_df <- bind_rows(filtered_caudate_predictions)
+
+ggplot(caudate_df, aes(x = x, y = predicted, group = response, color = response)) +
+  geom_line(alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "All Predicted Trajectories - Caudate",
+       x = "Age",
+       y = "Predicted Connectivity") +
+  theme(legend.position = "none")
+
+nacc_df <- bind_rows(filtered_nacc_predictions)
+
+ggplot(nacc_df, aes(x = x, y = predicted, group = response, color = response)) +
+  geom_line(alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "All Predicted Trajectories - NAcc",
+       x = "Age",
+       y = "Predicted Connectivity") +
+  theme(legend.position = "none")
+```
+
+That's neat. Seems to be some heterogeneity in trajectories!
+
+
+**Inputs:**
+prediction_list: a list of data frames (each with columns like x (age), predicted, seed, response, etc.)
+
+region_name: name of the brain region, used for plot titles
+
+k: number of clusters to use in k-means (default = 2)
+
+**Steps**
+
+*1. Combine all predictions:*
+
+Merges the list into one long data frame (df).
+
+Creates a unique trajectory_id for each time series (based on seed_response).
+
+*2. Reshape to wide format:*
+
+Creates a matrix (trajectory_matrix) with rows = trajectories and columns = age points.
+
+Each cell contains the predicted connectivity at a given age for that trajectory.
+
+*3. Scale trajectories:*
+
+Z-scores each row (trajectory) to focus on pattern rather than magnitude.
+
+*4. Elbow plot (optional step for choosing k):*
+
+Plots within-cluster sum of squares for k = 1 to 15.
+
+*5. Cluster using k-means:*
+
+Clusters the scaled matrix into k groups.
+
+Adds cluster assignment to the original long-format data.
+
+*6. Visualizations:*
+
+Spaghetti plot: individual lines colored by cluster + cluster mean line.
+
+Centroid plot: line plots of each cluster center (i.e., average trajectory).
+
+2D cluster visualization: projected view of cluster separation.
+
+Silhouette plot: for evaluating the optimal number of clusters.
+
+*7. Returns a list containing:*
+
+df_clustered: original data with cluster assignments
+
+km_result: raw k-means object
+
+centroid_plot, trajectory_by_cluster_plot: ggplot objects
+
+centroid_data: long-format version of centroid matrix
+
+
+Creating a function to do all of this across three networks here...
+
+```{r Clustering function}
+run_clustering_pipeline <- function(prediction_list, region_name, k = 2) {
+  # Combine list into a single data frame
+  df <- do.call(rbind, prediction_list)
+  rownames(df) <- NULL
+  
+  # Create trajectory ID
+  df$trajectory_id <- paste(df$seed, df$response, sep = "_")
+  
+  # Get unique age points and trajectory IDs
+  age_points <- sort(unique(df$x))
+  trajectory_ids <- unique(df$trajectory_id)
+  
+  # Create empty matrix for wide format
+  trajectory_matrix <- matrix(NA, 
+                              nrow = length(trajectory_ids), 
+                              ncol = length(age_points),
+                              dimnames = list(trajectory_ids, age_points))
+  
+  # Fill matrix
+  for (i in seq_along(trajectory_ids)) {
+    traj_data <- subset(df, trajectory_id == trajectory_ids[i])
+    trajectory_matrix[i, as.character(traj_data$x)] <- traj_data$predicted
+  }
+  
+  # Z-score scale each trajectory
+  #Double transpose because scale standardizes columns.
+  trajectory_matrix_scaled <- t(scale(t(trajectory_matrix)))
+  
+  # Elbow method
+  wss <- numeric(15)
+  for (i in 1:15) {
+    wss[i] <- kmeans(trajectory_matrix_scaled, centers = i, nstart = 25)$tot.withinss
+  }
+
+  elbow_df <- data.frame(
+   k = 1:15,
+   wss = wss
+  )
+
+  p_elbow <- ggplot(elbow_df, aes(x = k, y = wss)) +
+   geom_line(linewidth = 0.5) +
+    geom_point(size = 0.5) +
+    theme_classic() +
+    labs(
+      title = NULL,
+      x = NULL,
+      y = NULL
+    )  +
+    theme_set(theme_classic(base_size = 7))
+  print(p_elbow)
+  # Clustering
+  # nstart=25 sets algo to run 25 times with diff random initial cluster centers, and it keeps "best" results
+  #(i.e., lowest total within-cluster sum of squares)
+  set.seed(1738) #Fetty Wap
+  km_result <- kmeans(trajectory_matrix_scaled, centers = k, nstart = 25)
+  
+  # Add cluster assignment
+  cluster_assignments <- data.frame(
+    trajectory_id = rownames(trajectory_matrix_scaled),
+    cluster = as.factor(km_result$cluster)
+  )
+  
+  df_clustered <- merge(df, cluster_assignments, by = "trajectory_id")
+  
+  # Trajectory plot
+  p1 <- ggplot(df_clustered, aes(x = x, y = predicted, group = trajectory_id, color = cluster)) +
+    geom_line(alpha = 0.3, size = 0.5) +
+    stat_summary(aes(group = cluster), fun = mean, geom = "line", size = 0.5) +
+    facet_wrap(~cluster) +
+    #theme_minimal() +
+    labs(title = NULL,
+         x = NULL, y = NULL)  +
+    theme_set(theme_classic(base_size = 7)) +
+    theme(legend.position = "none",
+          strip.text = element_blank())
+  
+  print(p1)
+  
+  # Centroid plot
+  # Get rid of melt at somepoint and replace with pivot.
+  centroid_df <- as.data.frame(km_result$centers)
+  centroid_df$cluster <- as.factor(1:k)
+  centroid_long <- reshape2::melt(centroid_df, id.vars = "cluster",
+                        variable.name = "age", value.name = "predicted")
+  centroid_long$age <- as.numeric(as.character(centroid_long$age))
+  
+  p2 <- ggplot(centroid_long, aes(x = age, y = predicted, color = cluster, group = cluster)) + 
+    geom_line(size = 0.5) +
+    scale_color_manual(values = c("1" = "#1b9e77", "2" = "#d95f02")) +
+    #theme_minimal() +
+    labs(title = paste("Cluster Centroids -", region_name),
+       x = "Age", y = "Scaled Connectivity")  +
+    theme_set(theme_classic(base_size = 7))
+
+  
+  print(p2)
+  
+  # 2D cluster plot
+  p3 <- fviz_cluster(km_result, 
+               data = trajectory_matrix_scaled,
+               geom = "point",
+               pointsize = 0.5,
+               ellipse.type = "convex")  +
+    labs(title = NULL,
+         x = NULL,
+         y = NULL) +
+    theme_set(theme_classic(base_size = 7)) +
+    theme(legend.position = "none")
+  print(p3)
+  
+  #Silhouette Method to determine K.
+  p4 <- fviz_nbclust(trajectory_matrix_scaled, 
+                     kmeans, 
+                     method = "silhouette") + 
+    labs(title = NULL,
+         x = NULL,
+         y = NULL) +
+    theme_set(theme_classic(base_size = 7))
+  print(p4)
+  
+  return(list(data = df_clustered, 
+              clusters = km_result,
+              centroid_plot = p2,
+              trajectory_by_cluster_plot = p1,
+              centroid_data = centroid_long,
+              silhouette = p4,
+              twoD_cluster = p3,
+              elbow = p_elbow))
+}
+
+```
+
+Run for each network
+
+```{r actual clustering}
+# For caudate
+results_caudate_cluster <- run_clustering_pipeline(filtered_caudate_predictions, "Caudate", k = 2)
+
+# For putamen
+results_putamen_cluster <- run_clustering_pipeline(filtered_putamen_predictions, "Putamen", k = 2)
+
+# For NAcc
+results_nacc_cluster <- run_clustering_pipeline(filtered_nacc_predictions, "NAcc", k = 2)
+```
+
+
+```{r Supplemental Plots of kmeans results}
+save_cluster_plots <- function(results, seed_name, path = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_kmeans") {
+  
+  ggsave(
+    filename = paste0(path, "/", seed_name, "_trajectory_by_cluster.pdf"),
+    plot = results$trajectory_by_cluster_plot,
+    width = 40,
+    height = 26,
+    units = "mm"
+  )
+  
+  ggsave(
+    filename = paste0(path, "/", seed_name, "_silhouette.pdf"),
+    plot = results$silhouette,
+    width = 40,
+    height = 26,
+    units = "mm"
+  )
+  
+  ggsave(
+    filename = paste0(path, "/", seed_name, "_2D_cluster.pdf"),
+    plot = results$twoD_cluster,
+    width = 40,
+    height = 26,
+    units = "mm"
+  )
+  
+  ggsave(
+    filename = paste0(path, "/", seed_name, "_elbow.pdf"),
+    plot = results$elbow,
+    width = 40,
+    height = 26,
+    units = "mm"
+  )
+}
+
+
+save_cluster_plots(results_caudate_cluster, "caudate")
+save_cluster_plots(results_nacc_cluster, "nacc")
+save_cluster_plots(results_putamen_cluster, "putamen")
+
+```
+
+
+
+Stats about clustering results, and saving the csv file.
+
+```{r Stats about clustering results and saving}
+# Combine all results into one data frame
+all_predictions_clustered <- bind_rows(
+  results_caudate_cluster$data,
+  results_putamen_cluster$data,
+  results_nacc_cluster$data
+)
+
+##Cluster assignments for each trajectory.
+cluster_summary <- all_predictions_clustered %>%
+  dplyr::select(trajectory_id, seed, response, cluster) %>%
+  distinct()
+
+## Create distribution table
+cluster_distribution <- table(
+                              cluster_summary$seed,
+                              cluster_summary$response,
+                              cluster_summary$cluster)
+
+## Convert to data frame
+cluster_table <- as.data.frame(cluster_distribution)
+names(cluster_table) <- c("Seed", "Response", "Cluster", "Count")
+
+## Filter and sort
+cluster_table <- cluster_table %>%
+  filter(Count > 0) %>%
+  arrange(Seed, Response, Cluster)
+
+##Sort for easier viewing
+cluster_table <- cluster_table[order(cluster_table$Seed, 
+                                     cluster_table$Response, 
+                                     cluster_table$Cluster),]
+cluster_table
+
+
+#Save cluster asignments
+#write.csv(cluster_table, "./clean_data/gam_clusters.csv", row.names = FALSE)
+
+#cluster_table column for network
+
+
+#Below is worth reporting somewhere.
+a <- cluster_table %>% mutate(Response_net = str_extract(Response, "^[^_]+")) %>% 
+  group_by(Seed, Response_net,Cluster) %>% tally()
+a
+cluster_table %>% group_by(Seed,Cluster, Response) %>% tally()
+```
+
+
+While I am here, it might be useful to generate plots of the clustering output over age, and the corresponding brain regions. Not sure what colors I want yet, but can do orange and green for now (which would contrast the colors for the alcohol clusters?).
+
+Brain plots.
+Easiest way is to just add cluster assignment to results_significant data and re-run these plots...
+
+```{r Brain Plot templates}
+## Ensure the column names are consistent for joining
+#cluster_table_renamed <- cluster_table %>%
+#  rename(seed = Seed, response = Response)
+#
+## Perform the join
+#results_significant_clustered <- results_significant %>%
+#  left_join(cluster_table_renamed, by = c("response", "seed"))
+#head(results_significant_clustered)
+#
+##Putamen.
+#ggplot(results_significant_clustered %>% filter(seed == "putamen")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster)) +
+#  scale_fill_manual(values = c("1" = "#1b9e77", "2" = "#d95f02", "3" = "#7570b3"), 
+#                    name = "Cluster") +
+#  theme_void() +
+#  labs(title = "Putamen Seed")
+#
+##caudate
+#ggplot(results_significant_clustered %>% filter(seed == "caudate")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster)) +
+#  scale_fill_manual(values = c("1" = "#1b9e77", "2" = "#d95f02"), 
+#                    name = "Cluster") +
+#  theme_void() +
+#  labs(title = "Caudate Seed")
+#
+#
+##nacc
+#ggplot(results_significant_clustered %>% filter(seed == "nacc")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster)) +
+#  scale_fill_manual(values = c("1" = "#1b9e77", "2" = "#d95f02"), 
+#                    name = "Cluster") +
+#  theme_void() +
+#  labs(title = "NAcc Seed")
+```
+
+More polished brain plots
+Some hex codes for reference in Dark2 palette.
+#1b9e77
+#d95f02
+#7570b3
+#e7298a
+#66a61e
+#e6ab02
+#a6761d
+
+```{r Polished brain Plots}
+##Putamen.
+#putamen_clusters_brain <- ggplot(results_significant_clustered %>% 
+#                                   filter(seed == "putamen")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster),
+#             size = .09) +
+#  scale_fill_manual(values = c("1" = "#1b9e77", 
+#                               "2" = "#d95f02"),
+#                    na.value = NA) +
+#  theme_void() +
+#  theme(legend.position = "none")
+#putamen_clusters_brain
+#
+#ggsave(plot = putamen_clusters_brain,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/putamen_clusters_brain.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 40, 
+#       height = 20)
+#
+#
+##caudate
+#caudate_clusters_brain <- ggplot(results_significant_clustered %>% 
+#                                   filter(seed == "caudate")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster),
+#             size = 0.09) +
+#  scale_fill_manual(values = c("1" = "#7570b3", 
+#                               "2" = "#e7298a"), 
+#                    na.value = NA) +
+#  theme_void()+
+#  theme(legend.position = "none")
+#
+#caudate_clusters_brain
+#ggsave(plot = caudate_clusters_brain,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/caudate_clusters_brain.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 40, 
+#       height = 20)
+##nacc
+#nacc_clusters_brain <- ggplot(results_significant_clustered %>% filter(seed == "nacc")) + 
+#  geom_brain(atlas = gordon, 
+#             mapping = aes(fill = Cluster),
+#             size = 0.09) +
+#  scale_fill_manual(values = c("1" = "#66a61e", 
+#                               "2" = "#e6ab02"), 
+#                    na.value = NA) +
+#  theme_void() +
+#  theme(legend.position = "none")
+#nacc_clusters_brain
+#
+#ggsave(plot = nacc_clusters_brain,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/nacc_clusters_brain.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 40, 
+#       height = 20)
+#
+```
+
+
+centroid trajectories plots. Reflects the average trajectory for each cluster.
+
+FINN NOTE: Consider changing color scheme from 6 different colors, to three color scheme with light vs dark. May be easier to visualize the effects.
+
+```{r Putamen centroid Figure}
+##Trying to recreate this plot.
+#results_putamen_cluster$centroid_plot
+#
+##saving plot data
+#putamen_centroid_data <- results_putamen_cluster$centroid_data
+#
+#
+#
+##Putamen centroid figure
+#putamen_centroids <- ggplot(putamen_centroid_data, 
+#                            aes(x = age, 
+#                                y = predicted, 
+#                                color = cluster, 
+#                                group = cluster)) + 
+#  geom_line(size = 0.5) +
+#  scale_color_manual(values = c("1" = "#1b9e77", "2" = "#d95f02"),
+#                     labels = c("1" = "Putamen", "2" = "Putamen")) +
+#  theme_modern() +
+#  theme(
+#    plot.title = element_text(size = 6, hjust = 0.5),
+#    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+#    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+#    axis.text.x = element_text(size = 5),
+#    axis.text.y = element_text(size = 5),
+#    axis.line = element_line(size = .2),
+#    axis.ticks = element_line(size = .2),
+#    legend.text = element_text(size = 5),
+#    legend.title = element_text(size = 6),
+#    legend.key.size = unit(0.3, "cm")
+#    )   +
+#  labs(title = "Putamen Cluster Trajectories",
+#    x = "Age (years)", 
+#       y = "FC (z-scored)",
+#       color = NULL)
+#
+#putamen_centroids
+#
+#ggsave(plot = putamen_centroids,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/putamen_centroids.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 61, 
+#       height = 40)
+#
+```
+
+
+Caudate
+
+```{r Caudate centroid figure}
+##Trying to recreate this plot.
+#results_caudate_cluster$centroid_plot
+#
+##saving plot data
+#caudate_centroid_data <- results_caudate_cluster$centroid_data
+#
+#
+#
+##Putamen centroid figure
+#caudate_centroids <- ggplot(caudate_centroid_data, 
+#                            aes(x = age, 
+#                                y = predicted, 
+#                                color = cluster, 
+#                                group = cluster)) + 
+#  geom_line(size = 0.5) +
+#  scale_color_manual(values = c("1" = "#7570b3", "2" = "#e7298a"),
+#                     labels = c("1" = "Caudate", "2" = "Caudate")) +
+#  theme_modern() +
+#  theme(
+#    plot.title = element_text(size = 6, hjust = 0.5),
+#    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+#    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+#    axis.text.x = element_text(size = 5),
+#    axis.text.y = element_text(size = 5),
+#    axis.line = element_line(size = .2),
+#    axis.ticks = element_line(size = .2),
+#    legend.text = element_text(size = 5),
+#    legend.title = element_text(size = 6),
+#    legend.key.size = unit(0.3, "cm")
+#    )   +
+#  labs(title = "Caudate Cluster Trajectories",
+#    x = "Age (years)", 
+#       y = "FC (z-scored)",
+#       color = NULL)
+#
+#caudate_centroids
+#
+#ggsave(plot = caudate_centroids,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/caudate_centroids.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 61, 
+#       height = 40)
+```
+
+NAcc
+
+
+```{r Nacc centroid figure}
+##Trying to recreate this plot.
+#results_nacc_cluster$centroid_plot
+#
+##saving plot data
+#nacc_centroid_data <- results_nacc_cluster$centroid_data
+#
+#
+#
+##nacc centroid figure
+#nacc_centroids <- ggplot(nacc_centroid_data, 
+#                            aes(x = age, 
+#                                y = predicted, 
+#                                color = cluster, 
+#                                group = cluster)) + 
+#  geom_line(size = 0.5) +
+#  scale_color_manual(values = c("1" = "#66a61e", "2" = "#e6ab02"),
+#                     labels = c("1" = "NAcc", "2" = "NAcc")) +
+#  theme_modern() +
+#  theme(
+#    plot.title = element_text(size = 6, hjust = 0.5),
+#    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+#    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+#    axis.text.x = element_text(size = 5),
+#    axis.text.y = element_text(size = 5),
+#    axis.line = element_line(size = .2),
+#    axis.ticks = element_line(size = .2),
+#    legend.text = element_text(size = 5),
+#    legend.title = element_text(size = 6),
+#    legend.key.size = unit(0.3, "cm")
+#    )   +
+#  labs(title = "NAcc Cluster Trajectories",
+#    x = "Age (years)", 
+#       y = "FC (z-scored)",
+#       color = NULL)
+#
+#nacc_centroids
+#
+#ggsave(plot = nacc_centroids,
+#       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/nacc_centroids.pdf", 
+#       device = "pdf", 
+#       dpi = 500,
+#       units = "mm",
+#       width = 61, 
+#       height = 40)
+```
+
+
+FLUX WORK! I'M SORRY FUTURE DAN.
+
+It's ok current present Dan. I think these figures are great and are all I really need for this specific figure.
+
+
+```{r}
+#p1_put_data <- results_putamen_cluster$data
+
+p1_data <- results_putamen_cluster$data %>%
+  group_by(trajectory_id) %>%
+  mutate(x_z = scale(x),
+         predicted_z = scale(predicted)) %>%
+  ungroup()
+
+
+
+putamen_cluster_smooth <- ggplot(p1_data, 
+                                 aes(x = x, 
+                                     y = predicted_z, 
+                                     group = trajectory_id, 
+                                     color = cluster)) + 
+  # individual trajectories
+  geom_line(alpha = 0.2, size = 0.3) +
+  
+  # smoothed cluster-average trajectories
+  geom_smooth(aes(group = cluster), 
+              se = FALSE, size = 0.6, method = "loess", span = 0.8) +
+  
+  scale_color_manual(values = c("1" = "#1b9e77", "2" = "#1b3877ff"),
+                     labels = c("1" = "Putamen", "2" = "Putamen")) +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 5),
+    legend.title = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    #legend.position = "none"
+  ) +
+  labs(title = "Putamen Cluster Trajectories",
+       x = "Age (years)", 
+       y = "FC (z-scored)",
+       color = NULL)
+
+putamen_cluster_smooth
+
+ggsave(plot = putamen_cluster_smooth,
+       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/putamen_centroids_with_pred.pdf", 
+       device = "pdf", 
+       dpi = 500,
+       units = "mm",
+       width = 61, 
+       height = 40)
+
+
+#NACC
+
+p2_data <- results_nacc_cluster$data %>%
+  group_by(trajectory_id) %>%
+  mutate(x_z = scale(x),
+         predicted_z = scale(predicted)) %>%
+  ungroup()
+
+
+
+nacc_cluster_smooth <- ggplot(p2_data, 
+                                 aes(x = x, 
+                                     y = predicted_z, 
+                                     group = trajectory_id, 
+                                     color = cluster)) + 
+  # individual trajectories
+  geom_line(alpha = 0.2, size = 0.3) +
+  
+  # smoothed cluster-average trajectories
+  geom_smooth(aes(group = cluster), 
+              se = FALSE, size = 0.6, method = "loess", span = 0.8) +
+  
+  scale_color_manual(values = c("1" = "#d95f02", "2" = "#e6ab02ff"),
+                     labels = c("1" = "NAcc", "2" = "NAcc")) +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 5),
+    legend.title = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  labs(title = "NAcc Cluster Trajectories",
+       x = "Age (years)", 
+       y = "FC (z-scored)",
+       color = NULL)
+
+nacc_cluster_smooth
+
+ggsave(plot = nacc_cluster_smooth,
+       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/nacc_centroids_with_pred.pdf", 
+       device = "pdf", 
+       dpi = 500,
+       units = "mm",
+       width = 61, 
+       height = 40)
+
+
+#caudate
+
+p3_data <- results_caudate_cluster$data %>%
+  group_by(trajectory_id) %>%
+  mutate(x_z = scale(x),
+         predicted_z = scale(predicted)) %>%
+  ungroup()
+
+
+
+caudate_cluster_smooth <- ggplot(p3_data, 
+                                 aes(x = x, 
+                                     y = predicted_z, 
+                                     group = trajectory_id, 
+                                     color = cluster)) + 
+  # individual trajectories
+  geom_line(alpha = 0.2, size = 0.3) +
+  
+  # smoothed cluster-average trajectories
+  geom_smooth(aes(group = cluster), 
+              se = FALSE, size = 0.6, method = "loess", span = 0.8) +
+  
+  scale_color_manual(values = c("1" = "#7570b3", "2" = "#7500b3ff"),
+                     labels = c("1" = "NAcc", "2" = "NAcc")) +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 5),
+    legend.title = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  labs(title = "caudate Cluster Trajectories",
+       x = "Age (years)", 
+       y = "FC (z-scored)",
+       color = NULL)
+
+caudate_cluster_smooth
+
+ggsave(plot = caudate_cluster_smooth,
+       filename = "H:/Dan/ncanda/R/figures/RSA_PittPsych_2025/caudate_centroids_with_pred.pdf", 
+       device = "pdf", 
+       dpi = 500,
+       units = "mm",
+       width = 61, 
+       height = 40)
+```
+

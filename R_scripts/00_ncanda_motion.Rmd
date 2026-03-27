@@ -1,0 +1,151 @@
+---
+title: "ncanda_motion"
+author: "Daniel Petrie"
+date: "2024-08-26"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Global
+
+```{r}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(lme4)
+library(lmerTest)
+library(GGally)
+#library(pscl)
+library(glmmTMB)
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/")
+
+#Data (for ages)
+cddr0_8 <- read.csv("./R/clean_data/cddr0_8.csv", header = TRUE)
+
+#Motion
+ge_motion <- read.table("./motion_txt/ncanda_ge_motion.txt", header = FALSE, sep = "")
+siemens_motion <- read.delim("./motion_txt/ncanda_siemens_motion.txt", header = FALSE, sep = "")
+```
+
+Combine and clean
+
+```{r}
+#Adding scanner column just in case.
+ge_motion$scanner <- "ge"
+siemens_motion$scanner <- "siemens"
+
+#Creating the motion file and renaming.
+motion <- 
+  bind_rows(ge_motion, siemens_motion) %>%
+  select(-V1) %>%
+  rename(id = V2,
+         count = V3)
+
+
+cddr0_8_merge <- cddr0_8 %>%
+  mutate(visitnum = case_when(
+    visit == "baseline" ~ "0",
+    visit == "followup_1y" ~ "1",
+    visit == "followup_2y" ~ "2",
+    visit == "followup_3y" ~ "3",
+    visit == "followup_4y" ~ "4",
+    visit == "followup_5y" ~ "5",
+    visit == "followup_6y" ~ "6",
+    visit == "followup_7y" ~ "7",
+    visit == "followup_8y" ~ "8")) %>%
+  mutate(id = paste0(gsub("NCANDA_", "", subject), "_", visitnum)) %>%
+  select(id, age, visit)
+
+#Merging
+motion_age <- left_join(motion, cddr0_8_merge, by = "id")
+```
+
+Ok. Clean enough. Plotting motion over age and binned motion
+
+```{r}
+#Amount of volumes that are acceptable
+270*.3
+#81
+
+#Gettting a sense of motion for whole sample
+ggplot(motion_age, aes(x = count)) +
+  geom_histogram(binwidth = 1, 
+                 color = "black", 
+                 fill = "lightblue") +
+  labs(x = "Count", 
+       y = "Frequency", 
+       title = "Frequency of Count Values") +
+  theme_modern() +
+  geom_vline(xintercept = 81, 
+             linetype = "dashed", 
+             color = "orange", 
+             size = 1)
+
+ggplot(motion_age, aes(x = age, y = count)) +
+  geom_point() +
+  geom_hline(yintercept = 81, linetype = "dashed", color = "orange", size = 1) +
+  labs(x = "Age", 
+       y = "Censored TRs", 
+       title = "Motion across age") +
+  theme_modern() +
+  geom_smooth(method = "lm")
+
+
+ggplot(motion_age, aes(x = visit, y = count)) +
+  geom_point() +
+  geom_hline(yintercept = 81, linetype = "dashed", color = "orange", size = 1) +
+  labs(x = "Age", 
+       y = "Censored TRs", 
+       title = "Motion across visit") +
+  theme_modern()
+
+#Age effect on motion
+summary(lm(count~1 + age, data = motion_age))
+
+#A 1 unit increase in age is associated with -0.3 unit decrease in motion. In other words, younger subjects have more motion.
+```
+
+Now I need to flag any instances where the count of censored TRs > 81 and get a rough breakdown of their ages and what scanner they used.
+
+```{r}
+motion_age_removed <- motion_age %>%
+  mutate(remove = ifelse(count >= 81, TRUE, FALSE)) %>%
+  filter(remove == TRUE)
+
+145/4505 # 3% of scans (145) have high motion.
+
+ggplot(motion_age_removed, aes(x = age, y = count)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Age", 
+       y = "Censored TRs", 
+       title = "Motion across age") +
+  theme_modern()
+
+ggplot(motion_age_removed, aes(x = visit, y = count)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Visit", 
+       y = "Censored TRs", 
+       title = "Motion across age") +
+  theme_modern()
+
+#No effect of age on motion
+summary(lm(count~1 + age, data = motion_age_removed))
+```
+
+Appears to even be a slight increase in censored TRs with age, but basically flat.
+
+For main cleaning script, I should add a line of code removing subjects with bad imaging from this script.
+
+Creating .csv to filter subject with high motion.
+
+```{r}
+write.csv(motion_age_removed, file = "./R/clean_data/high_motion_subjects.csv", row.names = FALSE)
+```
+

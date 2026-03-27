@@ -1,0 +1,126 @@
+---
+title: "ncanda_tat2_cleaning"
+author: "Daniel Petrie"
+date: "2024-10-04"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library("ggplot2") #For plotting
+library("GGally") #ggpairs()
+library("tidyverse") #Wranglin
+library("dplyr") #Wranglin
+library("lme4")
+library(lmerTest)
+
+#WD
+setwd("H:/Dan/ncanda/R")
+
+#Data
+tat2 <- read.csv("H:/Projects/NCANDA/scripts/txt/ncanda_striatum_roi_extract.csv", header = TRUE)
+```
+
+Subsetting and creating a visit and visit numeric column. Also rearrange as to not annoy me.
+
+```{r}
+tat2_sub <- tat2 %>%
+  select(-input) %>%
+  separate(subj, into = c("subj", "visit_numeric"), sep = "_") %>%
+  mutate(visit_numeric = as.numeric(visit_numeric),
+         visit = case_when(
+           visit_numeric == 0 ~ "baseline",
+           visit_numeric == 1 ~ "followup_1y",
+           visit_numeric == 2 ~ "followup_2y",
+           visit_numeric == 3 ~ "followup_3y",
+           visit_numeric == 4 ~ "followup_4y",
+           visit_numeric == 5 ~ "followup_5y",
+           visit_numeric == 6 ~ "followup_6y",
+           visit_numeric == 7 ~ "followup_7y",
+           visit_numeric == 8 ~ "followup_8y"
+         )) %>%
+  rename(id = subj) %>%
+  select(id, visit_numeric, visit, everything()) %>%
+  group_by(id) %>%
+  arrange(id, visit_numeric)
+```
+
+Note to self... data set above is used for raincloud plots. with roi as a facet essentially.
+
+Making data wide(r)
+
+```{r}
+tat2_sub_wide <- tat2_sub %>%
+  pivot_wider(names_from = roi, values_from = beta) 
+```
+
+Saving
+
+```{r}
+#write.csv(tat2_sub_wide, file = "./clean_data/tat2_harox.csv", row.names = FALSE)
+```
+
+
+Quick check on trajectories and see if they look ok.
+
+```{r}
+ggplot(data = tat2_sub_wide %>% 
+         filter(visit_numeric %in% 0:8) %>% 
+         group_by(id) %>%
+         filter(n() == 9) %>%  
+         ungroup() %>%
+         slice_sample(n = 20, by = id),
+       aes(x = visit_numeric, y = putamen, group = id)) + 
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(transform = "reverse") +
+  geom_smooth(method = "lm", aes(group = 1))
+
+ggplot(data = tat2_sub_wide, aes(x=visit_numeric, y = putamen, group = id)) +
+  geom_point() +
+  geom_line() +
+  geom_smooth(method = "lm", aes(group = 1))
+```
+
+Might as well check some growth models.
+
+```{r}
+no_growth <- lmer(caudate ~ 1 + (1|id),
+                  data = tat2_sub_wide,
+                  na.action = "na.exclude")
+summary(no_growth)
+
+icc(no_growth)
+#Sick, so with more time points, there is more within-person variability to model!!!! YAY
+
+#Adding time
+growth_noRS <- lmer(putamen ~ 1 + visit_numeric + (1|id),
+                  data = tat2_sub_wide,
+                  na.action = "na.exclude")
+
+summary(growth_noRS)
+
+#Adding random slope of time.
+growth_RS <- lmer(putamen ~ 1 + visit_numeric + (1 + visit_numeric|id),
+                  data = tat2_sub_wide,
+                  na.action = "na.exclude")
+
+summary(growth_RS)
+
+plot(ggpredict(growth_RS, terms = c("visit_numeric")))
+```
+
+
+
+
+
+```{r}
+#t <- tat2_sub_wide %>% 
+#         filter(visit_numeric %in% 0:8) %>%  # Ensure only subjects with visits 0-8 are included
+#         group_by(id) %>%
+#         filter(n() == 9) %>%  # Ensure that only subjects with exactly 9 rows (0-8 visits) are included
+#         ungroup() %>%
+#         slice_sample(n = 20, by = id)
+```
+
