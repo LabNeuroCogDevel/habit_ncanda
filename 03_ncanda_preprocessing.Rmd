@@ -1,0 +1,151 @@
+---
+title: "ncanda_preprocessing"
+author: "Daniel Petrie"
+date: "2024-10-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library("ggplot2") #For plotting
+library("GGally") #ggpairs()
+library("tidyverse") #Wranglin
+library("dplyr") #Wranglin
+library("lme4")
+library("lmerTest")
+library("bmlm")
+#WD
+setwd("H:/Dan/ncanda/R")
+
+#Data
+dat_putamen <- read.csv("clean_data/no_preprocess_harm_putamen_seed.csv", header = TRUE)
+dat_caudate <- read.csv("clean_data/no_preprocess_harm_caudate_seed.csv", header = TRUE)
+dat_nacc <- read.csv("clean_data/no_preprocess_harm_nacc_seed.csv", header = TRUE)
+dat <- read.csv("clean_data/no_preprocess_harm_gordon_network_seed.csv", header = TRUE)
+```
+
+Preprocessing will be a bit excessive.
+1. Z-score (_z)
+3. Mean age (age_b)
+2. within (_cw) + between (_cb) all time-varying variables
+3. Other stuff will come up.
+
+I need to do this across four different data sets (network seed/putamen seed/caudate seed/nacc seed).
+
+```{r z-scoring}
+#ROI-ROI
+#dat <- dat %>%
+#  mutate(across(c("age", "nacc_iron", "putamen_iron", "caudate_iron", "pallidum_iron", "striatum_iron",
+#                  "put_precg", "put_poscg", "put_sma", "put_caud", "put_ofc", "put_vmpfc", "put_dlpfc", 
+#                  "precg_poscg", "precg_sma", "precg_caud", "precg_ofc", "precg_vmpfc", "precg_dlpfc", 
+#                  "poscg_sma", "poscg_caud", "poscg_ofc", "poscg_vmpfc", "poscg_dlpfc", "sma_caud", 
+#                  "sma_ofc", "sma_vmpfc", "sma_dlpfc", "caud_ofc", "caud_vmpfc", "caud_dlpfc", "ofc_vmpfc", 
+#                  "ofc_dlpfc", "vmpfc_dlpfc", "cddr16", "cddr17", "cddr18", "cddr19", "cddr21", "cddr22", 
+#                  "cddr23", "cddr26", "cddr27", "cddr30", "cddr31", "ocd_raw", "ocd_t", "ocd_pct"), 
+#                ~scale(.), 
+#                .names = "{.col}_z"))
+
+#Putamen
+dat_putamen_z <- dat_putamen %>% 
+  mutate(across(
+    .cols = !c("subject", "sex", "visit", "visit_numeric", 
+               "mri_rsfmri_date", "mri_scanner", "site", 
+               "scanner", "drinking_category_month", "aseba"),
+    .fns = ~ scale(.),
+    .names = "{.col}_z"
+  ))
+
+#caudate
+dat_caudate_z <- dat_caudate %>% 
+  mutate(across(
+    .cols = !c("subject", "sex", "visit", "visit_numeric", 
+               "mri_rsfmri_date", "mri_scanner", "site", 
+               "scanner", "drinking_category_month", "aseba"),
+    .fns = ~ scale(.),
+    .names = "{.col}_z"
+  ))
+
+#nacc
+dat_nacc_z <- dat_nacc %>% 
+  mutate(across(
+    .cols = !c("subject", "sex", "visit", "visit_numeric", 
+               "mri_rsfmri_date", "mri_scanner", "site", 
+               "scanner", "drinking_category_month", "aseba"),
+    .fns = ~ scale(.),
+    .names = "{.col}_z"
+  ))
+
+#gordon
+dat_z <- dat %>% 
+  mutate(across(
+    .cols = !c("subject", "sex", "visit", "visit_numeric", 
+               "mri_rsfmri_date", "mri_scanner", "site", 
+               "scanner", "drinking_category_month", "aseba"),
+    .fns = ~ scale(.),
+    .names = "{.col}_z"
+  ))
+```
+
+Taking the mean of age
+
+```{r Mean age}
+dat_putamen_z <- dat_putamen_z %>% 
+  group_by(subject) %>% 
+  mutate(age_b = mean(age, na.rm = TRUE)) 
+
+dat_caudate_z <- dat_caudate_z %>% 
+  group_by(subject) %>% 
+  mutate(age_b = mean(age, na.rm = TRUE)) 
+
+dat_nacc_z <- dat_nacc_z %>% 
+  group_by(subject) %>% 
+  mutate(age_b = mean(age, na.rm = TRUE)) 
+
+dat_z <- dat_z %>% 
+  group_by(subject) %>% 
+  mutate(age_b = mean(age, na.rm = TRUE)) 
+```
+
+Within/between
+
+```{r Within and Between}
+columns_to_exclude <- c("subject", "sex", "visit", "visit_numeric", 
+                        "mri_rsfmri_date", "mri_scanner", "site", 
+                        "scanner", "drinking_category_month", "aseba", "age_b")
+columns_to_include <- setdiff(names(dat_putamen_z), 
+                              c(columns_to_exclude, grep("_z$", names(dat_putamen_z), value = TRUE)))
+
+dat_putamen_z_cwcb <- isolate(dat_putamen_z, 
+                         by = "subject", 
+                         value = columns_to_include, 
+                         which = "both")
+
+dat_caudate_z_cwcb <- isolate(dat_caudate_z, 
+                         by = "subject", 
+                         value = columns_to_include, 
+                         which = "both")
+
+dat_nacc_z_cwcb <- isolate(dat_nacc_z, 
+                         by = "subject", 
+                         value = columns_to_include, 
+                         which = "both")
+
+columns_to_include_dat <- setdiff(names(dat_z), 
+                              c(columns_to_exclude, grep("_z$", names(dat_z), value = TRUE)))
+
+dat_z_cwcb <- isolate(dat_z, 
+                         by = "subject", 
+                         value = columns_to_include_dat, 
+                         which = "both")
+```
+
+Saving
+
+```{r Saving}
+write.csv(dat_putamen_z_cwcb, file = "clean_data/full_putamen_seed_020425.csv", row.names = FALSE)
+write.csv(dat_caudate_z_cwcb, file = "clean_data/full_caudate_seed_020425.csv", row.names = FALSE)
+write.csv(dat_nacc_z_cwcb, file = "clean_data/full_nacc_seed_020425.csv", row.names = FALSE)
+write.csv(dat_z_cwcb, file = "clean_data/full_gordon_network_seed_020425.csv", row.names = FALSE)
+```
+

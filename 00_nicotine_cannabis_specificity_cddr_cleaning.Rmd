@@ -1,0 +1,122 @@
+---
+title: "NUMBER_nicotine_cannabis_specificity"
+output: html_document
+date: "2025-10-10"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Global}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(see) #theme_modern()
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R")
+
+#CDDR data. I think I want to use the "youth report" version for now because it has ages.
+#Baseline through year 8
+cddr0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/youthreport1_cddr.csv", header = TRUE)
+#Year 9
+cddr8 <- read.csv("H:/Raw/Datasets/NCANDA/followup_8y/NCANDA_RELEASE_8Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/youthreport1_cddr.csv", header = TRUE)
+
+#Dataset to extract sex
+#Might not need for this because no binge or other grouping calculations
+#dem0_7 <- read.csv("H:/Raw/Datasets/NCANDA/followup_7y/NCANDA_RELEASE_7Y_REDCAP_MEASUREMENTS_V01/summaries/redcap/demographics.csv", header = TRUE)
+
+#Youth report for cannabis measures need 0_7 and 0_8
+
+
+```
+
+**CDDR variable descriptions**
+
+*darts* 14 items
+
+youthreport1_cddr2   When was the last time you smoked cigarettes? (0=today, 1=yesterday, etc.) (# of days)
+
+youthreport1_cddr3   In the past 30 days, how many days did you smoke cigarettes? (0-30)
+
+youthreport1_cddr4a   How many cigarettes have you smoked in your lifetime?
+
+youthreport1_cddr4b   How many cigarettes have you smoked since your last interview?
+
+youthreport1_cddr5   How many cigarettes have you smoked in the last year, so out of 365 days?
+
+youthreport1_cddr6   How old were you when you first smoked a cigarette, more than a puff? (code age to nearest quarter year using decimals, e.g. 14.25)
+
+youthreport1_cddr7a   Have you started smoking cigarettes at least once a week? (include chewing tobacco and cigar use)
+
+youthreport1_cddr7   How old were you when you started smoking cigarettes at least once a week? (code age to nearest quarter year using decimals, e.g. 141/4 = 14.25)
+
+youthreport1_cddr8   How many cigarettes a day do you smoke?
+
+youthreport1_cddr9   How soon after you wake up do you smoke your first cigarette (# minutes)
+
+youthreport1_cddr10   Do you find it difficult to refrain from smoking in places where it is forbidden? (e.g., church, library, theater, etc.)?
+
+youthreport1_cddr11   Which cigarette would you hate most to give up?
+
+youthreport1_cddr12   Do you smoke more frequently during the first hours after waking than during the rest of the day?
+
+youthreport1_cddr13   Do you smoke if you are so ill that you are in bed most of the day?
+
+
+*weed* 8 items
+
+youthreport1_cddr52 How old were you when you first used MARIJUANA, even a puff? (code age to nearest quarter year using decimals, e.g. 141/4 = 14.25)
+#youthreport1_cddr52a
+
+youthreport1_cddr53 How old were you when you first used MARIJUANA regularly?(at least once a week) (code age to nearest quarter year using decimals, e.g. 141/4 = 14.25)
+
+youthreport1_cddr53a Have you ever used MARIJUANA regularly? (at least once a week)
+
+youthreport1_cddr54 When is the last time you used MARIJUANA (code # days ago) (0=today, 1=yesterday, etc.)
+
+youthreport1_cddr55a In your lifetime, how many days have you used MARIJUANA?
+
+youthreport1_cddr55b Since your last interview, how many days did you use MARIJUANA?
+
+youthreport1_cddr56 In the last year ( so out of 365 days), how many days did you use MARIJUANA? (0-365)
+
+youthreport1_cddr57 In the last 30 days, how many days did you use MARIJUANA? (0-30)
+
+So out of all these items, I think for weed I can do it similarly to alcohol and use *youthreportt1_cddr56*. And for nicotine, I think it is fine just reporting past month *youthreport1_cddr3* or darts smoked in the past year *youthreport1_cddr5*?
+
+For now, I will just extract items that I think I might need later.
+
+```{r}
+#Vector of alcohol variable names
+subset_var <- c("subject", "visit", "youthreport1_cddr2", "youthreport1_cddr3", 
+                "youthreport1_cddr4a", "youthreport1_cddr4b", "youthreport1_cddr5",
+                "youthreport1_cddr6", "youthreport1_cddr7", "youthreport1_cddr7a", "youthreport1_cddr8",
+                "youthreport1_cddr52", "youthreport1_cddr53", "youthreport1_cddr53a",
+                "youthreport1_cddr54", "youthreport1_cddr55a", "youthreport1_cddr55b",
+                "youthreport1_cddr56", "youthreport1_cddr57")
+
+#Binding data, arrange by visit, select alcohol variables, rename.
+cddr0_8 <- bind_rows(cddr0_7, cddr8) %>% 
+  arrange(subject, visit) %>%
+  dplyr::select(all_of(subset_var)) %>%
+  rename_with(~ str_replace(., "^youthreport1_", ""), starts_with("youthreport1_"))
+
+# List of columns to modify
+variable_list <- c("cddr2", "cddr3", "cddr4a", "cddr4b", "cddr5", 
+"cddr6", "cddr7", "cddr7a", "cddr8", "cddr52", "cddr53", "cddr53a", 
+"cddr54", "cddr55a", "cddr55b", "cddr56", "cddr57")
+
+#Recoding some NAs to 0's to reflect an absence of tobacco and cannabis use behaviors and not a true missing value.
+cddr0_8 <- cddr0_8 %>%
+  mutate(across(all_of(variable_list), ~ replace_na(.,0)))
+```
+
+Write csv in clean_data
+
+```{r}
+write.csv(cddr0_8, file = "./clean_data/cddr0_8_nicotine_cannabis.csv", row.names = FALSE)
+```
+
+

@@ -1,0 +1,1464 @@
+---
+title: "09_binge_specificity"
+output: html_document
+date: "2026-03-16"
+editor_options: 
+  chunk_output_type: console
+---
+
+Libraries, wd(), and data
+
+```{r Global}
+#Packages
+library(tidyverse) #Wrangling
+library(dplyr) #Wrangling
+library(stringr) #For str_replace
+library(ggplot2)
+library(psych)
+library(lme4)
+library(lmerTest)
+library(GGally)
+#library(pscl)
+#library(glmmTMB)
+library(ggeffects)
+library(see)
+#library(ggseg)
+#library(ggsegGordon)
+library(kableExtra)
+library(clipr)
+library(ggpubr)
+#library(LNCDR)
+library(gratia)
+library(mgcv)
+library(purrr)
+library(readr)
+library(emmeans)
+library(data.table)
+library(ggridges)
+library(ggnewscale)
+#WD. Change whether through H: or on different sever
+setwd("H:/Dan/ncanda/R/")
+
+#Clean data
+dat_long <- read.csv("./clean_data/fc_clusters_alcohol_long_101025.csv", header = TRUE)
+dat <- read.csv("./clean_data/fc_clusters_alcohol_101025.csv", header = TRUE)
+```
+
+# Colors I am using for now. Might have to switch to some colorblind friendly pallete.
+
+```{r Color pallete}
+  scale_color_manual(values = c("putamen_cluster1" = "#1b9e77",
+                                "putamen_cluster2" = "#1b3877ff",
+                                "caudate_cluster1" = "#7570b3",
+                                "caudate_cluster2" = "#7500b3ff",
+                                "nacc_cluster1" = "#d95f02",
+                                "nacc_cluster2" = "#e6ab02")) +# putamen_cluster1
+scale_color_gradient(low = "#cceae7", high = "#1b9e77")
+
+# putamen_cluster2
+scale_color_gradient(low = "#cdd6e8", high = "#1b3877ff")
+
+# caudate_cluster1
+scale_color_gradient(low = "#e3def2", high = "#7570b3")
+
+# caudate_cluster2
+scale_color_gradient(low = "#e4d6f2", high = "#7500b3ff")
+
+# nacc_cluster1
+scale_color_gradient(low = "#f6d8c6", high = "#d95f02")
+
+# nacc_cluster2
+scale_color_gradient(low = "#f8edcc", high = "#e6ab02")
+
+```
+
+
+# Primary analyses for alcohol use behavior
+
+## TVEM analyses
+
+TVEM to predict trajectories of past year days drinking based on corticostriatal FC. I will fit 6 models and use a Bonferonni correction. For any significant time varying effects, I will further examine using derivatives and plotting the associations.
+
+```{r}
+by_vars <- c(
+  "putamen_cluster1",
+  "putamen_cluster2",
+  "caudate_cluster1",
+  "caudate_cluster2",
+  "nacc_cluster1",
+  "nacc_cluster2"
+)
+
+# Storage lists
+fits <- list()
+model_warnings <- list()
+
+for (v in by_vars) {
+
+  # build formula
+  formula <- as.formula(
+    paste0(
+      "cddr30 ~ 1 + sex_fac + 
+       s(age, k = 5) + 
+       s(age, by = ", v, ", k = 5)"
+    )
+  )
+
+  # fit model
+  fit <- gamm(
+    formula,
+    random = list(subject = ~1, subject = ~0 + age),
+    data = dat,
+    method = "REML",
+    na.action = na.exclude
+  )
+
+  # store model
+  fits[[v]] <- fit
+
+  # capture warnings produced during summary()
+  w <- NULL
+  invisible(
+    withCallingHandlers(
+      summary(fit$gam),
+      warning = function(wrn) {
+        w <<- c(w, conditionMessage(wrn))
+        invokeRestart("muffleWarning")
+      }
+    )
+  )
+
+  model_warnings[[v]] <- w
+}
+
+# Optional: print GAM summaries
+lapply(fits, function(x) summary(x$gam))
+lapply(fits, function(x) summary(x$lme))
+
+lapply(fits, function(x) gam.vcomp(x$gam))
+
+model_warnings
+```
+
+We can safely ignore these warnings. They are a function of the numeric-by smooths and are benign.
+
+```{r}
+# Extract only "by" smooth p-values across all models
+by_smooth_pvals <- map_df(seq_along(fits), function(i) {
+  s <- summary(fits[[i]]$gam)
+  
+  # Keep only smooths where the term name contains "by=" so : esssentially
+  smooth_table <- as.data.frame(s$s.table) %>%
+    mutate(term = rownames(s$s.table),
+           model = i) %>%
+    filter(grepl(":", term)) %>%
+    select(model, term, edf = edf, F, p_value = `p-value`)
+  
+  smooth_table
+})
+
+# Apply FDR correction across these "by" smooths
+by_smooth_pvals <- by_smooth_pvals %>%
+  mutate(p_value_fdr = p.adjust(p_value, method = "bonferroni"))
+
+by_smooth_pvals
+
+#putamen <- fits[[2]]$gam$pterms
+
+#pred_growth <- ggpredict(putamen, terms = c("age[17:30]", 
+#                                           "putamen_cluster2[-2,-1,0,1,2]"))
+
+#plot(pred_growth)
+```
+
+All not significant. No need to plot.
+
+## TVEM figure(s)
+
+```{r TVEM figures BINGE}
+#Putamen cluster1
+pred_growth <-  ggpredict(fits$putamen_cluster1, terms = c("age[12.04:29.3]", 
+                                           "putamen_cluster1[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = F)
+#Extract derivatives
+d <- derivatives(fits$putamen_cluster1,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#cceae7", high = "#1b9e77") +
+  theme_modern() +
+  geom_vline(xintercept = 22.79, 
+             linetype = "dashed", 
+             color = "black", 
+             linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "Putamen Cluster 1\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_put1.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+#
+#
+#Putamen cluster2
+#
+#
+pred_growth <-  ggpredict(fits$putamen_cluster2, terms = c("age[12.04:29.3]", 
+                                           "putamen_cluster2[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = TRUE)
+#Extract derivatives
+d <- derivatives(fits$putamen_cluster2,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#cdd6e8", high = "#1b3877ff") +
+  theme_modern() +
+  #geom_vline(xintercept = 22.79, 
+  #           linetype = "dashed", 
+  #           color = "black", 
+  #           linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "Putamen Cluster 2\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_put2.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+
+#
+#
+#caud cluster1
+#
+#
+pred_growth <-  ggpredict(fits$caudate_cluster1, terms = c("age[12.04:29.3]", 
+                                           "caudate_cluster1[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = TRUE)
+#Extract derivatives
+d <- derivatives(fits$caudate_cluster1,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#e3def2", high = "#7570b3") +
+  theme_modern() +
+  #geom_vline(xintercept = 22.79, 
+  #           linetype = "dashed", 
+  #           color = "black", 
+  #           linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "Caudate Cluster 1\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_caud1.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+
+#
+#
+#caud cluster2
+#
+#
+pred_growth <-  ggpredict(fits$caudate_cluster2, terms = c("age[12.04:29.3]", 
+                                           "caudate_cluster2[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = TRUE)
+#Extract derivatives
+d <- derivatives(fits$caudate_cluster2,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#e4d6f2", high = "#7500b3ff") +
+  theme_modern() +
+  #geom_vline(xintercept = 22.79, 
+  #           linetype = "dashed", 
+  #           color = "black", 
+  #           linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "Caudate Cluster 2\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_caud2.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+
+
+#
+#
+#nacc cluster1
+#
+#
+pred_growth <-  ggpredict(fits$nacc_cluster1, terms = c("age[12.04:29.3]", 
+                                           "nacc_cluster1[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = TRUE)
+#Extract derivatives
+d <- derivatives(fits$nacc_cluster1,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#f6d8c6", high = "#d95f02") +
+  theme_modern() +
+  #geom_vline(xintercept = 22.79, 
+  #           linetype = "dashed", 
+  #           color = "black", 
+  #           linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "NAcc Cluster 1\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_nacc1.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+
+
+#
+#
+#nacc cluster1
+#
+#
+pred_growth <-  ggpredict(fits$nacc_cluster2, terms = c("age[12.04:29.3]", 
+                                           "nacc_cluster2[-2,-1,0,1,2]"))
+
+plot(pred_growth, show_data = TRUE)
+#Extract derivatives
+d <- derivatives(fits$nacc_cluster2,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+#21.14 years
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Nice figure
+p3 <- ggplot(data = pred_growth, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group)))) +
+  geom_line() +
+  scale_color_gradient(low = "#f8edcc", high = "#e6ab02") +
+  theme_modern() +
+  #geom_vline(xintercept = 22.79, 
+  #           linetype = "dashed", 
+  #           color = "black", 
+  #           linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "NAcc Cluster 2\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+p3
+
+ggsave(p3, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_nacc2.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+### TVEM raw data plots. These are for supplementary fig if I end up adding.
+
+```{r TVEM w/ Raw data plot}
+pred_growth_p4 <-  ggpredict(fits$putamen_cluster2, terms = c("age[12.04:29.3]", 
+                                           "putamen_cluster2[-2,-1,0,1,2]"))
+p4 <- ggplot() +
+  geom_line(data = pred_growth_p4, 
+             aes(x = x, 
+                 y = predicted,
+                 group = group,
+                 colour = as.numeric(as.character(group))),
+            show.legend = FALSE) +
+  scale_color_gradient(low = "#cceae7", high = "#1b9e77") +
+  new_scale_color() +
+  new_scale_fill() +
+  geom_point(data = dat, 
+             aes(x = age, 
+                 y = cddr30),
+             size = 0.05,
+             alpha = 0.2,
+             color = "grey60") + 
+  #geom_line(data = full, 
+  #          aes(x = age, 
+  #              y = cic_pos_dorsal_put_harm, 
+  #              color = mb_resid_z, 
+  #              group = id),
+  #          linewidth = 0.5) +
+  theme_modern() +
+  geom_vline(xintercept = 22.79, 
+             linetype = "dashed", 
+             color = "black", 
+             linewidth = 0.5) +
+  labs(x = "Age (years)",
+       y = "Days of Alcohol Use Past Year",
+       color = "Putamen FC\n(z-scored)") +
+    theme(
+    axis.title.x = element_text(size = 8, margin = margin(t=3)),
+    axis.title.y = element_text(size = 8, margin = margin(r=3)),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.text = element_text(size = 6),
+    legend.title = element_text(size = 7),
+    legend.key.size = unit(0.3, "cm")
+  ) +
+  guides(colour = guide_legend(reverse = TRUE))
+  
+p4
+
+ggsave(p4, 
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/tvem_put1_raw_PRESENTATION_FIGURE.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+
+
+# Drinking initiation analyses
+
+Idea here is to control for age effects of FC and predict changes in connectivity based on functional connectivity cluster and drinking phase.
+
+```{r Drinking initiation main analysis}
+#Drinking onset? Before/after/never drank
+dat_long_ba <- dat_long %>%
+  group_by(subject) %>%
+  mutate(
+    drinking_onset = ifelse(any(cddr30 > 0), min(age[cddr30 > 0], na.rm = TRUE), NA),
+    drinking_phase = case_when(
+      is.na(drinking_onset) ~ "Never",   # Never drank
+      age < drinking_onset  ~ "Before",  # Before first drinking report
+      age >= drinking_onset ~ "After"    # After first drinking report
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(drinking_phase = factor(drinking_phase, levels = c("Before", "After", "Never")),
+         seed_fac = factor(seed_fac),
+         subject_fac = factor(subject_fac))
+
+
+#Excplicity testing via anova-like approach
+dat_long_ba <- dat_long_ba %>%
+  mutate(seed_cluster_fac = factor(seed_cluster,
+                                   levels = c("nacc_cluster1", "nacc_cluster2", 
+                                              "caudate_cluster1", "caudate_cluster2", 
+                                              "putamen_cluster1", "putamen_cluster2")))
+
+
+please_lord <- bam(mean_value ~ 1 + sex_fac  +  seed_cluster_fac*drinking_phase +
+                                s(age, k = 5) + 
+                                s(subject_fac, bs = 're') +
+                                s(subject_fac, age, bs = 're'), 
+                   data = dat_long_ba, 
+                   na.action = na.exclude, 
+                   method = "fREML")
+summary(please_lord)
+
+plot(ggpredict(please_lord, terms = c("drinking_phase", 
+                                      "seed_cluster_fac")))
+
+
+#Probing the intereactions in a few different ways
+emm_results <- emmeans(please_lord, ~ drinking_phase | seed_cluster_fac)
+
+pairs(emm_results)
+
+contrasts <- contrast(emm_results, method = "pairwise", adjust = "none")
+contrasts
+
+#Just doing adjustment manually.
+contrasts_dat <- as.data.frame(contrasts)
+contrasts_dat$p_adj <- p.adjust(contrasts_dat$p.value, method = "bonferroni")
+
+#making sig column for easy viewing.
+contrasts_dat$sig <- contrasts_dat$p_adj < 0.05
+contrasts_dat
+#Plotting contrasts
+plot(emm_results, horizontal = TRUE)
+plot(contrasts)
+
+q <- as.data.frame(emm_results)
+```
+
+Drinking initiation is associated with increased FC in NAcc cluster 1 and Caudate cluster 2. 
+
+
+
+## Drinking initiation figures
+
+### Main figure showing results from main initiation model
+
+```{r Initiation Figure all ROIs}
+seed_phase <- ggplot(q %>% 
+                       filter(drinking_phase %in% c("Before", "After", "Never")), 
+                     aes(x = seed_cluster_fac, 
+                         y = emmean, 
+                         group = drinking_phase,
+                         color = seed_cluster_fac)) + 
+  geom_point(position = position_dodge(width = 0.7), size = 1) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), 
+                width = 0.2, 
+                position = position_dodge(width = 0.7)) +
+  scale_color_manual(values = c("putamen_cluster1" = "#1b9e77",
+                                "putamen_cluster2" = "#1b3877ff",
+                                "caudate_cluster1" = "#7570b3",
+                                "caudate_cluster2" = "#7500b3ff",
+                                "nacc_cluster1" = "#d95f02",
+                                "nacc_cluster2" = "#e6ab02"
+                                )) +
+  scale_x_discrete(labels = rep(c("Before    After   Never"), 6)) +
+  annotate("text", x = 1:6, y = .20, 
+           label = c("NAcc Cluster 1", "NAcc Cluster 2", 
+                     "Caudate Cluster 1", "Caudate Cluster 2",
+                     "Putamen Cluster 1", "Putamen Cluster 2"),
+           vjust = -0.5, hjust = 0.5, size = 2) +
+  labs(x = "Drinking Phase", y = "Estimated Mean") +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    legend.position = "none"
+    )
+seed_phase
+
+ggsave(plot = seed_phase,
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/seed_phase.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 160, 
+       height = 60)
+
+
+#I also want to isolate figures that I will carry over. Putamen 1
+seed_phase <- ggplot(q %>% 
+                       filter(drinking_phase %in% c("Before", "After", "Never")) %>%
+                       filter(seed_cluster_fac == "putamen_cluster1"), 
+                     aes(x = seed_cluster_fac, 
+                         y = emmean, 
+                         group = drinking_phase,
+                         color = seed_cluster_fac)) + 
+  geom_point(position = position_dodge(width = 0.7), size = 1) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), 
+                width = 0.2, 
+                position = position_dodge(width = 0.7)) +
+  scale_color_manual(values = c("putamen_cluster1" = "#1b9e77")) +
+  scale_y_continuous(limits = c(-0.2, 0.2),
+                     breaks = seq(-0.2,0.2, by = 0.1)) +
+  #scale_x_discrete(labels = rep(c("Before    After   Never"), 1)) +
+  #annotate("text", x = 0, y = .20, 
+  #         label = c("Putamen Cluster 1"),
+  #         vjust = -0.5, hjust = 0.5, size = 2) +
+  labs(x = "", y = "") +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    legend.position = "none"
+    )
+seed_phase
+
+ggsave(plot = seed_phase,
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/putamen1_init.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 36, 
+       height = 60)
+
+#I also want to isolate figures that I will carry over. caudate 2
+seed_phase <- ggplot(q %>% 
+                       filter(drinking_phase %in% c("Before", "After", "Never")) %>%
+                       filter(seed_cluster_fac == "caudate_cluster2"), 
+                     aes(x = seed_cluster_fac, 
+                         y = emmean, 
+                         group = drinking_phase,
+                         color = seed_cluster_fac)) + 
+  geom_point(position = position_dodge(width = 0.7), size = 1) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), 
+                width = 0.2, 
+                position = position_dodge(width = 0.7)) +
+  scale_color_manual(values = c("caudate_cluster2" = "#7500b3ff")) +
+  scale_y_continuous(limits = c(-0.2, 0.2),
+                     breaks = seq(-0.2,0.2, by = 0.1)) +
+  #scale_x_discrete(labels = rep(c("Before    After   Never"), 1)) +
+  #annotate("text", x = 0, y = .20, 
+  #         label = c("Putamen Cluster 1"),
+  #         vjust = -0.5, hjust = 0.5, size = 2) +
+  labs(x = "", y = "") +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    legend.position = "none"
+    )
+seed_phase
+
+ggsave(plot = seed_phase,
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/caudate2_init.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 36, 
+       height = 60)
+
+#I also want to isolate figures that I will carry over. nacc 1
+seed_phase <- ggplot(q %>% 
+                       filter(drinking_phase %in% c("Before", "After", "Never")) %>%
+                       filter(seed_cluster_fac == "nacc_cluster1"), 
+                     aes(x = seed_cluster_fac, 
+                         y = emmean, 
+                         group = drinking_phase,
+                         color = seed_cluster_fac)) + 
+  geom_point(position = position_dodge(width = 0.7), size = 1) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), 
+                width = 0.2, 
+                position = position_dodge(width = 0.7)) +
+  scale_color_manual(values = c("nacc_cluster1" = "#d95f02")) +
+  scale_y_continuous(limits = c(-0.2, 0.2),
+                     breaks = seq(-0.2,0.2, by = 0.1)) +
+  #scale_x_discrete(labels = rep(c("Before    After   Never"), 1)) +
+  #annotate("text", x = 0, y = .20, 
+  #         label = c("Putamen Cluster 1"),
+  #         vjust = -0.5, hjust = 0.5, size = 2) +
+  labs(x = "", y = "") +
+  theme_modern() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    #legend.text = element_text(size = 5),
+    #legend.title = element_text(size = 6),
+    #legend.key.size = unit(0.3, "cm"),
+    legend.position = "none"
+    )
+seed_phase
+
+ggsave(plot = seed_phase,
+       filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/nacc1_init.pdf", 
+       device = "pdf", 
+       dpi = 300,
+       units = "mm",
+       width = 36, 
+       height = 60)
+```
+
+
+### Analyses and Figure showing growth model colored by drinking onset (nacc)
+
+
+```{r}
+dat_long_ba$time_since_onset <- dat_long_ba$age - dat_long_ba$drinking_onset
+
+#Creating new dataframe
+dat_pred_nacc1 <- dat_long_ba %>%
+  filter(seed_cluster == "nacc_cluster1") 
+
+#Seeing if additional grouping variable works
+dat_pred_nacc1 <- dat_pred_nacc1 %>%
+  mutate(drinking_group = ifelse(drinking_phase == "Never", "Never", "Initiated"),
+         drinking_group = factor(drinking_group, levels = c("Initiated", "Never")))
+
+#Oredered?
+dat_pred_nacc1$drinking_group_ord <- factor(dat_pred_nacc1$drinking_group, 
+                             levels = c("Never", "Initiated"), 
+                             ordered = TRUE)
+
+test <- bam(mean_value ~ 1 + sex_fac + drinking_group_ord +
+              s(age, k = 5) +
+              s(age, by = drinking_group_ord, k = 5) +
+              s(subject_fac, bs = 're') +
+              s(age, subject_fac, bs = 're'), 
+            data = dat_pred_nacc1, 
+            na.action = na.exclude, 
+            method = "fREML")
+
+summary(test)
+#Function to calculate difference smooths
+#test_diff <- difference_smooths(test, select = c("s(age)", "s(age):drinking_group_ordInitiated"), partial_match = FALSE)
+
+#draw(test_diff)
+
+#Gratia plot
+draw(test)
+#mgcv plot
+plot(test, pages = 1)
+
+plot(ggpredict(test, terms = c("age")))
+plot(ggpredict(test, terms = c("drinking_group_ord")))
+plot(ggpredict(test, terms = c("age", "drinking_group_ord")), show_ci = FALSE)
+
+
+# Add predicted values to your data
+
+dat_pred_nacc1$predicted <-  predict(test, newdata = dat_pred_nacc1, type = "response")
+
+
+
+
+#If I want to color lines accordingly, I need to create average age by drinking-phase.
+cutoff_age <- dat_pred_nacc1 %>%
+  filter(drinking_phase == "After") %>%
+  group_by(subject) %>%
+  summarize(min_after_age = min(age), .groups = "drop") %>%
+  summarize(avg_cutoff = mean(min_after_age, na.rm = TRUE)) %>%
+  pull(avg_cutoff)
+
+dat_pred_nacc1 <- dat_pred_nacc1 %>%
+  mutate(phase_age = case_when(
+    drinking_phase == "Never" ~ "Never",
+    age < cutoff_age ~ "Before",
+    age >= cutoff_age ~ "After"
+  ))
+
+nacc1 <- ggplot(dat_pred_nacc1, aes(x = age, y = predicted, group = subject, color = drinking_phase)) +
+  #geom_point(alpha = 0.2, size = 0.05) +
+  geom_line(alpha = 0.2, size = 0.1) +
+      scale_color_manual(values = c(
+    "After" = "#d95f02ff",
+    "Before" = "black", 
+    "Never" = "black"))   +   
+    new_scale_color() +
+  new_scale_fill() +
+  geom_smooth(aes(group = phase_age, color = phase_age), size = 0.3, show.legend = FALSE) +
+  labs(y = "", x = "") +
+    scale_color_manual(values = c(
+    "After" = "#d95f02ff",  
+    "Before" = "black", 
+    "Never" = "black"
+  )) +
+    facet_wrap(~drinking_group, nrow = 1) + 
+ # geom_vline(xintercept = cutoff_age, linetype = "dashed", size = 0.2) +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.position = "none",
+    strip.text = element_blank(),
+    panel.background = element_blank(),   # remove gray panel
+    panel.grid = element_blank(),         # remove grid lines
+    plot.background = element_blank()     # remove outer gray
+  )
+
+nacc1
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/NAcc_pred_ban_plot.pdf", 
+      plot = nacc1,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+### Figure showing growth model colored by drinking onset (caudate)
+
+```{r}
+# Add predicted values to your data
+dat_pred_caud2 <- dat_long_ba %>%
+  filter(seed_cluster == "caudate_cluster2") 
+
+#Seeing if additional grouping variable works
+dat_pred_caud2 <- dat_pred_caud2 %>%
+  mutate(drinking_group = ifelse(drinking_phase == "Never", "Never", "Initiated"),
+         drinking_group = factor(drinking_group, levels = c("Initiated", "Never")))
+
+#Oredered?
+dat_pred_caud2$drinking_group_ord <- factor(dat_pred_caud2$drinking_group, 
+                             levels = c("Never", "Initiated"), 
+                             ordered = TRUE)
+
+#Seeing if there are actual trajectory differences
+test2 <- bam(mean_value ~ 1 + sex_fac  +  drinking_group_ord +
+              s(age, k = 5) +
+              s(age, by = drinking_group_ord, k = 5) +
+              s(subject_fac, bs = 're') +
+              s(age, subject_fac, bs = 're'), 
+            data = dat_pred_caud2, 
+            na.action = na.exclude, 
+            method = "fREML")
+
+summary(test2)
+draw(test2)
+plot(ggpredict(test2, terms = c("age")))
+plot(ggpredict(test2, terms = c("drinking_group_ord")))
+plot(ggpredict(test2, terms = c("age", "drinking_group_ord")))
+
+#Preds
+dat_pred_caud2$predicted <-  predict(test2, newdata = dat_pred_caud2, type = "response")
+
+
+
+
+#If I want to color lines accordingly, I need to create average age by drinking-phase.
+cutoff_age <- dat_pred_caud2 %>%
+  filter(drinking_phase == "After") %>%
+  group_by(subject) %>%
+  summarize(min_after_age = min(age), .groups = "drop") %>%
+  summarize(avg_cutoff = mean(min_after_age, na.rm = TRUE)) %>%
+  pull(avg_cutoff)
+
+dat_pred_caud2 <- dat_pred_caud2 %>%
+  mutate(phase_age = case_when(
+    drinking_phase == "Never" ~ "Never",
+    age < cutoff_age ~ "Before",
+    age >= cutoff_age ~ "After"
+  ))
+
+caud2 <- ggplot(dat_pred_caud2, aes(x = age, y = predicted, group = subject, color = drinking_phase)) +
+  #geom_point(alpha = 0.2, size = 0.05) +
+  geom_line(alpha = 0.2, size = 0.1) +
+      scale_color_manual(values = c(
+    "After" = "#7500b3ff",
+    "Before" = "black", 
+    "Never" = "black"))   +   
+    new_scale_color() +
+  new_scale_fill() +
+  geom_smooth(aes(group = phase_age, color = phase_age), size = 0.3, show.legend = FALSE) +
+  labs(y = "", x = "") +
+    scale_color_manual(values = c(
+    "After" = "#7500b3ff",  
+    "Before" = "black", 
+    "Never" = "black"
+  )) +
+    facet_wrap(~drinking_group, nrow = 1) + 
+ # geom_vline(xintercept = cutoff_age, linetype = "dashed", size = 0.2) +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.position = "none",
+    strip.text = element_blank(),
+    panel.background = element_blank(),   # remove gray panel
+    panel.grid = element_blank(),         # remove grid lines
+    plot.background = element_blank()     # remove outer gray
+  )
+
+caud2
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/caud_pred_ban_plot.pdf", 
+      plot = caud2,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+
+### Figure showing growth model colored by drinking onset (putamen)
+
+
+```{r}
+# Add predicted values to your data
+dat_pred_put1 <- dat_long_ba %>%
+  filter(seed_cluster == "putamen_cluster1") 
+
+#Seeing if additional grouping variable works
+dat_pred_put1 <- dat_pred_put1 %>%
+  mutate(drinking_group = ifelse(drinking_phase == "Never", "Never", "Initiated"),
+         drinking_group = factor(drinking_group, levels = c("Initiated", "Never")))
+
+#Oredered?
+dat_pred_put1$drinking_group_ord <- factor(dat_pred_put1$drinking_group, 
+                             levels = c("Never", "Initiated"), 
+                             ordered = TRUE)
+
+#Seeing if there are actual trajectory differences
+test3 <- bam(mean_value ~ 1 + sex_fac  +  drinking_group_ord +
+              s(age, k = 5) +
+              s(age, by = drinking_group_ord, k = 5) +
+              s(subject_fac, bs = 're') +
+              s(age, subject_fac, bs = 're'), 
+            data = dat_pred_put1, 
+            na.action = na.exclude, 
+            method = "fREML")
+
+summary(test3)
+gam.vcomp(test3)
+variance_comp(test3)
+draw(test3)
+plot(ggpredict(test3, terms = c("age")))
+plot(ggpredict(test3, terms = c("drinking_group_ord")))
+plot(ggpredict(test3, terms = c("age", "drinking_group_ord")))
+
+#Preds
+dat_pred_put1$predicted <-  predict(test3, newdata = dat_pred_put1, type = "response")
+
+
+
+
+#If I want to color lines accordingly, I need to create average age by drinking-phase.
+cutoff_age <- dat_pred_put1 %>%
+  filter(drinking_phase == "After") %>%
+  group_by(subject) %>%
+  summarize(min_after_age = min(age), .groups = "drop") %>%
+  summarize(avg_cutoff = mean(min_after_age, na.rm = TRUE)) %>%
+  pull(avg_cutoff)
+
+dat_pred_put1 <- dat_pred_put1 %>%
+  mutate(phase_age = case_when(
+    drinking_phase == "Never" ~ "Never",
+    age < cutoff_age ~ "Before",
+    age >= cutoff_age ~ "After"
+  ))
+
+put1 <- ggplot(dat_pred_put1, aes(x = age, y = predicted, group = subject, color = drinking_phase)) +
+  #geom_point(alpha = 0.2, size = 0.05) +
+  geom_line(alpha = 0.2, size = 0.1) +
+      scale_color_manual(values = c(
+    "After" = "#1b9e77",
+    "Before" = "black", 
+    "Never" = "black"))   +   
+    new_scale_color() +
+  new_scale_fill() +
+  geom_smooth(aes(group = phase_age, color = phase_age), size = 0.3, show.legend = FALSE) +
+  labs(y = "", x = "") +
+    scale_color_manual(values = c(
+    "After" = "#1b9e77",  
+    "Before" = "black", 
+    "Never" = "black"
+  )) +
+    facet_wrap(~drinking_group, nrow = 1) + 
+ # geom_vline(xintercept = cutoff_age, linetype = "dashed", size = 0.2) +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title.x = element_text(size = 6, margin = margin(t = 3)),
+    axis.title.y = element_text(size = 6, margin = margin(r = 3)),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.line = element_line(size = .2),
+    axis.ticks = element_line(size = .2),
+    legend.position = "none",
+    strip.text = element_blank(),
+    panel.background = element_blank(),   # remove gray panel
+    panel.grid = element_blank(),         # remove grid lines
+    plot.background = element_blank()     # remove outer gray
+  )
+
+put1
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_binge/put_pred_ban_plot.pdf", 
+      plot = put1,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+
+
+# Supplementary figures depicting difference smooths
+
+I think I want to show the results from draw() and ggpredict() of the smooths next to each other, so [2,6] dimensions. This will be for supplement so no need to make incredibly fancy.
+
+```{r}
+#
+#All of this would need to be ran if someone actually care about ages where smooths are different from each other.
+#
+#test4 <- bam(mean_value ~ 1 + sex_fac + drinking_group +
+#              #s(age, k = 5) +
+#              s(age, by = drinking_group, k = 5) +
+#              s(subject_fac, bs = 're') +
+#              s(age, subject_fac, bs = 're'), 
+#            data = dat_pred_nacc1, 
+#            na.action = na.exclude, 
+#            method = "fREML")
+#
+#summary(test4)
+##Function to calculate difference smooths
+#test_diff4 <- difference_smooths(test4, select = c("s(age)"))
+#
+#tail(test_diff4)
+#
+#draw(test_diff4)
+
+test_diff4
+
+#NAcc
+t1a <- plot(ggpredict(test, terms = c("age", "drinking_group_ord")), show_ci = FALSE) + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.position = "none")
+t1a
+
+
+t1b <- draw(test, select = "s(age):drinking_group_ordInitiated") + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.title = element_blank())
+t1b
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/nacc_smooths.pdf", 
+      plot = t1a,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/nacc_dif_smooths.pdf", 
+      plot = t1b,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+
+
+#caud
+t2a <- plot(ggpredict(test2, terms = c("age", "drinking_group_ord")), show_ci = FALSE) + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.position = "none")
+t2a
+
+
+t2b <- draw(test2, select = "s(age):drinking_group_ordInitiated") + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.title = element_blank())
+t2b
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/caudate_smooths.pdf", 
+      plot = t2a,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/caudate_dif_smooths.pdf", 
+      plot = t2b,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+
+
+#put
+t3a <- plot(ggpredict(test3, terms = c("age", "drinking_group_ord")), show_ci = FALSE) + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.position = "none")
+t3a
+
+
+t3b <- draw(test3, select = "s(age):drinking_group_ordInitiated") + 
+  theme_classic() +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  theme(legend.title = element_blank())
+t3b
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/putamen_smooths.pdf", 
+      plot = t3a,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+
+ggsave(filename = "H:/Dan/ncanda/R/figures/manuscript_figs/Supplementary_difference_smooths/putamen_dif_smooths.pdf", 
+      plot = t3b,
+       device = "pdf", 
+       dpi = 300, 
+      units = "mm",
+       width = 90, 
+       height = 60)
+```
+
+
+# Figure 2 work
+
+This chunk of code can probably be moved to another script. But I want to create a figure that shows the brain growth models after the K-means clustering and averaging at individual level step. I'm thinking it might be useful to plot based on seeded region, and overlay the gam smooths. Probably makes the most sense to do this from the long data and subset based on seed.
+
+```{r}
+#Seeing if long makes more sense.
+nacc_raw_plot <- ggplot(data = dat_long %>% 
+                          filter(str_detect(seed_cluster, "nacc")), 
+                        aes(x = age, 
+                            y = mean_value,
+                            colour = seed_cluster)) +
+  geom_point(size = .05, alpha = .2, color = "grey60") + 
+  #geom_line() +
+  geom_smooth(aes(group = seed_cluster, 
+                  color = seed_cluster),
+              method ="gam",
+              linewidth = 0.4) + 
+  scale_color_manual(values = c("nacc_cluster1" = "#d95f02",
+                                "nacc_cluster2" = "#e6ab02")) +
+  labs(x = "",
+       y = "") +
+  theme_modern() +
+  theme(
+     legend.position = "none",
+     plot.background = element_blank(),
+     panel.background = element_blank(),
+     axis.line = element_line(size = .2),
+     axis.ticks = element_line(size = .2),
+     #axis.line.x = element_line(color = "black"),
+     #axis.line.y = element_line(color = "black"), 
+     panel.grid = element_blank(),
+     text = element_text(size = 5),
+      axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5)
+    ) 
+nacc_raw_plot
+#ggsave(filename = 
+#         "H:/Dan/ncanda/R/figures/manuscript_figs/figure_2/nacc_raw_plot.pdf", 
+#      plot = nacc_raw_plot,
+#      device = "pdf", 
+#      dpi = 500, 
+#      units = "mm",
+#      width = 50, 
+#      height = 50)
+
+
+#Seeing if long makes more sense.
+caudate_raw_plot <- ggplot(data = dat_long %>% 
+                          filter(str_detect(seed_cluster, "caudate")), 
+                        aes(x = age, 
+                            y = mean_value,
+                            colour = seed_cluster)) +
+  geom_point(size = .05, alpha = .2, color = "grey60") + 
+  #geom_line() +
+  geom_smooth(aes(group = seed_cluster, 
+                  color = seed_cluster),
+              method ="gam",
+              linewidth = 0.4) + 
+  scale_color_manual(values = c("caudate_cluster1" = "#7570b3",
+                                "caudate_cluster2" = "#7500b3ff")) +
+  labs(x = "",
+       y = "") +
+  theme_modern() +
+  theme(
+     legend.position = "none",
+     plot.background = element_blank(),
+     panel.background = element_blank(),
+     axis.line = element_line(size = .2),
+     axis.ticks = element_line(size = .2),
+     #axis.line.x = element_line(color = "black"),
+     #axis.line.y = element_line(color = "black"), 
+     panel.grid = element_blank(),
+     text = element_text(size = 5),
+      axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5)
+    ) 
+caudate_raw_plot
+ggsave(filename = 
+         "H:/Dan/ncanda/R/figures/manuscript_figs/figure_2/caudate_raw_plot.pdf", 
+      plot = caudate_raw_plot,
+      device = "pdf", 
+      dpi = 500, 
+      units = "mm",
+      width = 50, 
+      height = 50)
+
+#Seeing if long makes more sense.
+putamen_raw_plot <- ggplot(data = dat_long %>% 
+                          filter(str_detect(seed_cluster, "putamen")), 
+                        aes(x = age, 
+                            y = mean_value,
+                            colour = seed_cluster)) +
+  geom_point(size = .05, alpha = .2, color = "grey60") + 
+  #geom_line() +
+  geom_smooth(aes(group = seed_cluster, 
+                  color = seed_cluster),
+              method ="gam",
+              linewidth = 0.4) + 
+  scale_color_manual(values = c("putamen_cluster1" = "#1b9e77",
+                                "putamen_cluster2" = "#1b3877ff")) +
+  labs(x = "",
+       y = "") +
+  theme_modern() +
+  theme(
+     legend.position = "none",
+     plot.background = element_blank(),
+     panel.background = element_blank(),
+     axis.line = element_line(size = .2),
+     axis.ticks = element_line(size = .2),
+     #axis.line.x = element_line(color = "black"),
+     #axis.line.y = element_line(color = "black"), 
+     panel.grid = element_blank(),
+     text = element_text(size = 5),
+      axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5)
+    ) 
+putamen_raw_plot
+ggsave(filename = 
+         "H:/Dan/ncanda/R/figures/manuscript_figs/figure_2/putamen_raw_plot.pdf", 
+      plot = putamen_raw_plot,
+      device = "pdf", 
+      dpi = 500, 
+      units = "mm",
+      width = 50, 
+      height = 50)
+#50/50 seems right.
+```
+
+
+Dr. Parr would like regions of significant from these models, in particular, the NAcc cluster 1 results.
+
+```{r}
+#Explicitly setting factors
+dat$subject_fac <- as.factor(dat$subject_fac)
+dat$sex_fac <- as.factor(dat$sex_fac)
+
+parr <- bam(nacc_cluster1 ~ 1 + sex_fac + s(age, k = 5) + s(subject_fac, bs = "re") + s(age, subject_fac, bs = 're'), data = dat)
+summary(parr)
+
+plot(ggpredict(parr, terms = "age"))
+
+#Extract derivatives
+d <- derivatives(parr,
+                 interval = "simultaneous",
+                 n_sim = 10000,
+                 n = 200)
+#Plot derivatives
+draw(d)
+
+#Calculate regions of significance, where CI != 0
+d <- d %>% mutate(sig = !(0>.lower_ci & 0<.upper_ci))
+
+#Derivative is !0
+#No change from 12 - 	14.64201
+#Change from 14.72874 - 	20.19296
+#No change from 20.27970 - 23.14191
+#Change from 23.22864 - 24.96332
+#No change from 25.05005 onwards.
+
+#Keep in mind this data includes both drinkers and non-drinkers, so tail at older ages is probably being warped a bit.
+
+#23.22864
+
+```
